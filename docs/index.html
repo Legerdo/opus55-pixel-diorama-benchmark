@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pixel Art Diorama Prompt Benchmark</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; background: #10171d; color: #edf4f5; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-width: 320px; }
+    header { padding: 18px 22px 14px; border-bottom: 1px solid #34454e; background: #152129; }
+    h1 { margin: 0 0 6px; font-size: 20px; letter-spacing: .02em; }
+    .context { margin: 0; color: #b6c8ce; font-size: 13px; }
+    main { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; padding: 14px; }
+    .card { min-width: 0; padding: 10px; border: 1px solid #34454e; border-radius: 10px; background: #18242b; }
+    .card-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+    h2 { margin: 0; font-size: 16px; }
+    a { color: #8de6ef; text-decoration: none; font-size: 13px; }
+    a:hover { text-decoration: underline; }
+    .viewport { position: relative; width: 100%; aspect-ratio: 16 / 9; overflow: hidden; background: #080c10; border-radius: 5px; }
+    iframe { position: absolute; top: 0; left: 0; display: block; width: 1280px; height: 720px; border: 0; transform-origin: top left; }
+    @media (max-width: 760px) {
+      main { grid-template-columns: minmax(0, 1fr); }
+      header { padding-inline: 14px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Pixel Art Diorama Prompt Benchmark</h1>
+    <p class="context">Claude Opus 5.5 · High effort · Four independent runs of the same scene</p>
+  </header>
+  <main>
+    <article class="card" aria-labelledby="title-A">
+      <div class="card-heading">
+        <h2 id="title-A">A · Baseline</h2>
+        <a href="./A/" target="_blank" rel="noopener noreferrer">Open standalone ↗</a>
+      </div>
+      <div class="viewport"><iframe src="./A/" title="A · Baseline" sandbox="allow-scripts" loading="eager" referrerpolicy="no-referrer"></iframe></div>
+    </article>
+    <article class="card" aria-labelledby="title-B">
+      <div class="card-heading">
+        <h2 id="title-B">B · Pixel Craft</h2>
+        <a href="./B/" target="_blank" rel="noopener noreferrer">Open standalone ↗</a>
+      </div>
+      <div class="viewport"><iframe src="./B/" title="B · Pixel Craft" sandbox="allow-scripts" loading="eager" referrerpolicy="no-referrer"></iframe></div>
+    </article>
+    <article class="card" aria-labelledby="title-C">
+      <div class="card-heading">
+        <h2 id="title-C">C · Art Direction</h2>
+        <a href="./C/" target="_blank" rel="noopener noreferrer">Open standalone ↗</a>
+      </div>
+      <div class="viewport"><iframe src="./C/" title="C · Art Direction" sandbox="allow-scripts" loading="eager" referrerpolicy="no-referrer"></iframe></div>
+    </article>
+    <article class="card" aria-labelledby="title-D">
+      <div class="card-heading">
+        <h2 id="title-D">D · Self Review</h2>
+        <a href="./D/" target="_blank" rel="noopener noreferrer">Open standalone ↗</a>
+      </div>
+      <div class="viewport"><iframe src="./D/" title="D · Self Review" sandbox="allow-scripts" loading="eager" referrerpolicy="no-referrer"></iframe></div>
+    </article>
+  </main>
+  <script>
+    (() => {
+      const fit = wrapper => {
+        const frame = wrapper.querySelector("iframe");
+        if (frame) frame.style.transform = "scale(" + (wrapper.clientWidth / 1280) + ")";
+      };
+      const wrappers = Array.from(document.querySelectorAll(".viewport"));
+      const observer = new ResizeObserver(entries => entries.forEach(entry => fit(entry.target)));
+      wrappers.forEach(wrapper => { observer.observe(wrapper); fit(wrapper); });
+    })();
+  </script>
+</body>
+</html>

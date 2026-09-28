@@ -1,0 +1,837 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rainy Night at the Wizard's Cabin</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #04050b; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; }
+  canvas { display: block; image-rendering: pixelated; image-rendering: crisp-edges; }
+</style>
+</head>
+<body>
+<canvas id="screen" role="img" aria-label="Animated pixel-art diorama: a small wizard stirs a glowing cyan cauldron beside a wooden cabin in a rainy forest at night, with a black cat, amber lantern, chimney smoke, steam, fireflies and rippling puddles."></canvas>
+<script>
+'use strict';
+
+// ---------------------------------------------------------------------------
+// Core setup: 320x180 logical buffer, integer nearest-neighbor upscale
+// ---------------------------------------------------------------------------
+const W = 320, H = 180, LOOP = 8, TAU = Math.PI * 2;
+
+const screen = document.getElementById('screen');
+const sctx = screen.getContext('2d');
+
+function makeCanvas(w, h) {
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  c.getContext('2d').imageSmoothingEnabled = false;
+  return c;
+}
+
+const buf = makeCanvas(W, H);
+const ctx = buf.getContext('2d');
+ctx.imageSmoothingEnabled = false;
+
+function resize() {
+  const dpr = window.devicePixelRatio || 1;
+  const s = Math.max(1, Math.floor(Math.min(innerWidth * dpr / W, innerHeight * dpr / H)));
+  screen.width = W * s;
+  screen.height = H * s;
+  screen.style.width = (W * s / dpr) + 'px';
+  screen.style.height = (H * s / dpr) + 'px';
+  sctx.imageSmoothingEnabled = false;
+}
+addEventListener('resize', resize);
+resize();
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+function rng(seed) {
+  return function () {
+    seed = (seed + 0x6D2B79F5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function hash(a, b) { return rng(a * 7919 + b * 104729 + 17)(); }
+const frac = v => v - Math.floor(v);
+const wrapX = x => ((x % W) + W) % W;
+
+const BAYER = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5].map(v => (v + 0.5) / 16);
+const dither = (x, y, v) => v > BAYER[(y & 3) * 4 + (x & 3)];
+
+function P(c, x, y, col) { c.fillStyle = col; c.fillRect(Math.round(x), Math.round(y), 1, 1); }
+function R(c, x, y, w, h, col) { c.fillStyle = col; c.fillRect(Math.round(x), Math.round(y), w, h); }
+
+function disc(c, cx, cy, r, col) {
+  r = Math.round(r); cx = Math.round(cx); cy = Math.round(cy);
+  if (r <= 0) { P(c, cx, cy, col); return; }
+  c.fillStyle = col;
+  for (let dy = -r; dy <= r; dy++) {
+    const w = Math.floor(Math.sqrt(Math.max(0, r * r - dy * dy + r * 0.8)));
+    c.fillRect(cx - w, cy + dy, w * 2 + 1, 1);
+  }
+}
+
+function ell(c, cx, cy, rx, ry, col) {
+  c.fillStyle = col;
+  for (let dy = -ry; dy <= ry; dy++) {
+    const w = Math.round(rx * Math.sqrt(Math.max(0, 1 - (dy * dy) / (ry * ry + 0.5))));
+    c.fillRect(Math.round(cx - w), Math.round(cy + dy), w * 2 + 1, 1);
+  }
+}
+
+function line(c, x0, y0, x1, y1, col) {
+  x0 = Math.round(x0); y0 = Math.round(y0); x1 = Math.round(x1); y1 = Math.round(y1);
+  c.fillStyle = col;
+  const dx = Math.abs(x1 - x0), dy = -Math.abs(y1 - y0);
+  const sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
+  let e = dx + dy;
+  for (;;) {
+    c.fillRect(x0, y0, 1, 1);
+    if (x0 === x1 && y0 === y1) break;
+    const e2 = 2 * e;
+    if (e2 >= dy) { e += dy; x0 += sx; }
+    if (e2 <= dx) { e += dx; y0 += sy; }
+  }
+}
+
+function sprite(c, rows, pal, ox, oy) {
+  for (let y = 0; y < rows.length; y++) {
+    const r = rows[y];
+    for (let x = 0; x < r.length; x++) {
+      const col = pal[r[x]];
+      if (!col) continue;
+      c.fillStyle = col;
+      c.fillRect(ox + x, oy + y, 1, 1);
+    }
+  }
+}
+
+// Additive, banded pixel glow
+function glow(cx, cy, r, rgb, a, steps) {
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i = steps; i >= 1; i--) disc(ctx, cx, cy, r * i / steps, `rgba(${rgb},${a})`);
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+function pine(g, cx, base, h, w, col, rim) {
+  const tiers = Math.max(3, Math.round(h / 11));
+  for (let y = 0; y < h; y++) {
+    const t = y / h;
+    const tp = frac(t * tiers);
+    const hw = Math.round((0.12 + 0.88 * t) * w * (0.5 + 0.5 * tp));
+    R(g, cx - hw, base - h + y, hw * 2 + 1, 1, col);
+    if (rim && hw > 0 && tp > 0.35) P(g, cx + hw, base - h + y, rim);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Scene constants
+// ---------------------------------------------------------------------------
+const CAUL = { x: 216, y: 144 };          // cauldron rim center
+const WIZ_O = { x: 190, y: 126 };         // wizard sprite origin
+const CAT_O = { x: 39, y: 126 };          // cat sprite origin
+const CHIMNEY = { x: 101, y: 53 };        // smoke origin
+const LANTERN = { x: 70, y: 110 };
+const PUDDLES = [
+  { x: 118, y: 163, rx: 19, ry: 4 },
+  { x: 262, y: 171, rx: 13, ry: 3 },
+];
+const inPuddle = (p, x, y, m = 0) => {
+  const dx = (x - p.x) / (p.rx - m), dy = (y - p.y) / (p.ry - m * 0.3 + 0.5);
+  return dx * dx + dy * dy <= 1;
+};
+
+// ---------------------------------------------------------------------------
+// Static layer: far (sky, moon, clouds, distant forest)
+// ---------------------------------------------------------------------------
+function buildFar() {
+  const c = makeCanvas(W, H), g = c.getContext('2d');
+  const sky = ['#06080f', '#090c1b', '#0d1226', '#121932', '#18203d', '#1e2747'];
+  for (let y = 0; y < 150; y++) {
+    const v = Math.min(1, y / 140) * (sky.length - 1);
+    const i = Math.floor(v), f = v - i;
+    for (let x = 0; x < W; x++) P(g, x, y, dither(x, y, f) ? sky[Math.min(i + 1, sky.length - 1)] : sky[i]);
+  }
+
+  // Moon behind clouds
+  const mx = 258, my = 30;
+  disc(g, mx, my, 22, 'rgba(110,130,200,0.05)');
+  disc(g, mx, my, 16, 'rgba(120,140,210,0.07)');
+  disc(g, mx, my, 12, 'rgba(140,160,220,0.09)');
+  disc(g, mx, my, 9, '#aeb9d6');
+  disc(g, mx - 1, my - 1, 7, '#c6cfe6');
+  P(g, mx - 3, my - 2, '#9aa5c4'); P(g, mx - 2, my - 2, '#9aa5c4');
+  P(g, mx + 2, my + 2, '#9aa5c4'); P(g, mx + 3, my + 1, '#9aa5c4'); P(g, mx + 1, my - 4, '#a3aecb');
+
+  // Clouds
+  const r = rng(42);
+  function cloud(x, y, w, base, rimCol) {
+    const blobs = [];
+    for (let i = 0; i < w / 6; i++) blobs.push([x + i * 6 + r() * 4, y + r() * 4 - 2, 4 + r() * 6]);
+    for (const b of blobs) disc(g, b[0], b[1] - 1, b[2], rimCol);
+    for (const b of blobs) disc(g, b[0], b[1] + 1, b[2], base);
+  }
+  cloud(-10, 12, 90, '#141a33', '#1f2748');
+  cloud(70, 6, 80, '#121830', '#1c2442');
+  cloud(150, 18, 70, '#151b35', '#212a4c');
+  cloud(226, 38, 100, '#161c37', '#3a4570'); // moonlit, covers lower moon
+  cloud(200, 4, 60, '#11172e', '#1d2544');
+  cloud(20, 36, 70, '#171d38', '#222b4d');
+
+  // Far ridge
+  for (let x = 0; x < W; x++) {
+    const h = 104 + Math.sin(x * 0.03) * 5 + Math.sin(x * 0.071 + 1) * 3;
+    R(g, x, Math.round(h), 1, 150 - Math.round(h), '#121932');
+  }
+  // Far pines
+  const r2 = rng(7);
+  for (let x = -6; x < W + 6; x += 7 + Math.floor(r2() * 5)) pine(g, x, 142, 34 + r2() * 18, 6 + r2() * 3, '#0f1530', '#171f3c');
+  // Mid pines
+  for (let x = -4; x < W + 6; x += 11 + Math.floor(r2() * 8)) pine(g, x, 144, 46 + r2() * 26, 8 + r2() * 4, '#0b1024', '#1a2444');
+  return c;
+}
+
+// ---------------------------------------------------------------------------
+// Static layer: mid (ground, cabin, props)
+// ---------------------------------------------------------------------------
+function buildMid() {
+  const c = makeCanvas(W, H), g = c.getContext('2d');
+  const r = rng(99);
+
+  // Ground
+  const gnd = ['#0e1618', '#111c1c', '#14211f', '#172622', '#1a2b25'];
+  for (let y = 134; y < H; y++) {
+    const v = Math.min(1, (y - 134) / 42) * (gnd.length - 1);
+    const i = Math.floor(v), f = v - i;
+    for (let x = 0; x < W; x++) P(g, x, y, dither(x, y, f) ? gnd[Math.min(i + 1, gnd.length - 1)] : gnd[i]);
+  }
+  for (let x = 0; x < W; x++) if (r() < 0.5) R(g, x, 133, 1, 1 + Math.floor(r() * 2), '#101a1a');
+  for (let i = 0; i < 350; i++) P(g, r() * W, 136 + r() * 44, r() < 0.5 ? '#1e3229' : '#0b1313');
+
+  // Mud path from door + branch to cauldron
+  for (let i = 0; i <= 20; i++) {
+    const t = i / 20;
+    ell(g, 57 + t * 10 + Math.sin(t * 3) * 4, 144 + t * 36, 7, 2, '#171617');
+  }
+  for (let i = 0; i <= 18; i++) {
+    const t = i / 18;
+    ell(g, 66 + t * 128, 152 + Math.sin(t * Math.PI) * 6, 5, 1, '#161517');
+  }
+  // Path stones
+  const stone = (x, y, rx) => {
+    ell(g, x, y, rx, 1, '#26252f');
+    R(g, x - rx + 1, y - 1, rx * 2 - 1, 1, '#3b3a48');
+    P(g, x - rx + 2, y - 1, '#62698a');
+  };
+  for (let i = 0; i < 9; i++) {
+    const t = i / 8;
+    stone(57 + t * 10 + Math.sin(t * 3) * 4 + (i % 2 ? 2 : -2), 146 + t * 32, 3 + (i % 2));
+  }
+  for (let i = 1; i < 10; i++) {
+    const t = i / 10;
+    stone(66 + t * 124, 153 + Math.sin(t * Math.PI) * 6 + (i % 2), 2 + (i % 2));
+  }
+
+  // Puddles (static water body; ripples are animated)
+  for (const p of PUDDLES) {
+    ell(g, p.x, p.y, p.rx + 2, p.ry + 1, '#0c1113');
+    ell(g, p.x, p.y, p.rx, p.ry, '#161e38');
+    ell(g, p.x, p.y - 1, p.rx - 3, Math.max(1, p.ry - 2), '#1c2546');
+    R(g, p.x - p.rx + 4, p.y - p.ry, p.rx, 1, '#26305a');
+  }
+
+  // Grass tufts
+  for (let i = 0; i < 70; i++) {
+    const x = r() * W, y = 136 + r() * 42;
+    if (PUDDLES.some(p => inPuddle(p, x, y, -3))) continue;
+    const n = 2 + Math.floor(r() * 3);
+    for (let k = 0; k < n; k++) {
+      const h = 2 + Math.floor(r() * 3), lean = r() < 0.5 ? -1 : 1;
+      line(g, x + k, y, x + k + (h > 3 ? lean : 0), y - h, '#1d3a2a');
+      P(g, x + k + (h > 3 ? lean : 0), y - h, '#2b4f37');
+    }
+  }
+
+  // Bushes
+  function bush(x, y, s, rimCol) {
+    for (let i = 0; i < 5; i++) disc(g, x + (i - 2) * s * 0.7, y - Math.abs(i - 2) * -1 - s * 0.4 - 1, s - Math.abs(i - 2), rimCol);
+    for (let i = 0; i < 5; i++) disc(g, x + (i - 2) * s * 0.7, y - Math.abs(i - 2) * -1 - s * 0.4, s - Math.abs(i - 2), '#0f2119');
+    for (let i = 0; i < s * 3; i++) P(g, x + (r() - 0.5) * s * 3, y - r() * s * 1.2, '#15301f');
+  }
+  bush(146, 140, 5, '#1b3a2b');
+  bush(168, 138, 4, '#1b3a2b');
+  bush(250, 146, 5, '#1d4a48');
+  bush(296, 152, 6, '#1a3528');
+
+  // Glowing mushrooms
+  const mush = (x, y) => { R(g, x, y - 2, 1, 2, '#bdb4a2'); R(g, x - 1, y - 3, 3, 1, '#3fd0c8'); P(g, x, y - 4, '#8ff5ee'); };
+  mush(283, 162); mush(287, 164); mush(279, 165); mush(154, 150); mush(157, 151);
+
+  // ---- Cabin -------------------------------------------------------------
+  // Chimney (roof will overlap lower part)
+  for (let y = 56; y < 84; y++) {
+    for (let x = 96; x < 107; x++) {
+      const row = Math.floor((y - 56) / 3), off = row % 2 ? 2 : 0;
+      const mortar = (y - 56) % 3 === 2 || (x + off - 96) % 5 === 4;
+      P(g, x, y, mortar ? '#262433' : (x < 98 ? '#56536a' : (hash(x, y) < 0.3 ? '#3a3848' : '#4a4758')));
+    }
+  }
+  R(g, 94, 53, 15, 3, '#5c5a6e'); R(g, 94, 53, 15, 1, '#77758c'); R(g, 97, 52, 9, 1, '#1a1822');
+
+  // Gable wall (vertical planks)
+  for (let y = 62; y < 93; y++) {
+    const d = (y - 58) * 1.3;
+    const xl = Math.round(76 - d + 6), xr = Math.round(76 + d - 6);
+    for (let x = xl; x <= xr; x++) P(g, x, y, (x % 4 === 0) ? '#2c1b10' : (x % 8 < 4 ? '#4a2f1c' : '#432a19'));
+  }
+  // Attic round window
+  disc(g, 76, 80, 4, '#2a1a0e'); disc(g, 76, 80, 3, '#c98a3e'); disc(g, 75, 79, 1, '#f0b860');
+  R(g, 76, 77, 1, 7, '#2a1a0e'); R(g, 73, 80, 7, 1, '#2a1a0e');
+
+  // Log walls
+  for (let y = 92; y < 140; y++) {
+    const row = (y - 92) % 6;
+    const col = row === 0 ? '#7a5234' : row === 5 ? '#2a190d' : row >= 3 ? '#4f321e' : '#5e3c24';
+    R(g, 36, y, 80, 1, col);
+  }
+  for (let i = 0; i < 160; i++) {
+    const x = 36 + r() * 80, y = 92 + r() * 48;
+    if ((Math.floor(y) - 92) % 6 !== 5) R(g, x, y, 2 + r() * 3, 1, '#3f2716');
+  }
+  // Log ends at corners
+  for (let k = 0; k < 8; k++) {
+    const y = 94 + k * 6;
+    for (const x of [35, 116]) { disc(g, x, y, 2, '#8a6040'); P(g, x, y, '#5a3a22'); P(g, x - 1, y - 2, '#a57a52'); }
+  }
+  // Foundation stones
+  for (let x = 34; x < 118; x += 5) { ell(g, x + 2, 140, 3, 1, '#2b2a35'); R(g, x, 139, 4, 1, '#3d3c4a'); }
+
+  // Door
+  R(g, 49, 111, 16, 29, '#24160b');
+  for (let x = 51; x < 63; x++) R(g, x, 113, 1, 27, x % 3 === 0 ? '#3a2414' : (x % 3 === 1 ? '#5a3820' : '#4d301b'));
+  R(g, 51, 118, 12, 1, '#2f1d10'); R(g, 51, 132, 12, 1, '#2f1d10');
+  R(g, 51, 117, 5, 2, '#3b3b46'); R(g, 51, 131, 5, 2, '#3b3b46');
+  P(g, 61, 126, '#e0b048'); P(g, 61, 127, '#8a6a2a');
+  // Step
+  R(g, 46, 140, 22, 3, '#34333f'); R(g, 46, 140, 22, 1, '#4a4958'); P(g, 50, 140, '#6a7090'); P(g, 60, 140, '#6a7090');
+
+  // Window
+  R(g, 79, 103, 23, 19, '#24160b');
+  for (let y = 105; y < 120; y++) {
+    const t = (y - 105) / 15;
+    R(g, 81, y, 19, 1, t < 0.33 ? '#ffd98a' : t < 0.7 ? '#ffbe56' : '#e8923a');
+  }
+  // silhouettes of shelves & potions inside
+  R(g, 81, 114, 19, 1, '#8a4a1e');
+  R(g, 83, 110, 2, 4, '#9a5a28'); R(g, 86, 111, 2, 3, '#7a3a1a'); R(g, 94, 109, 2, 5, '#9a5a28'); R(g, 97, 111, 2, 3, '#7a3a1a');
+  R(g, 90, 105, 1, 15, '#3a2414'); R(g, 81, 112, 19, 1, '#3a2414');
+  R(g, 77, 121, 27, 2, '#6a4a2e'); R(g, 77, 121, 27, 1, '#8a6440');
+
+  // Rain barrel
+  for (let y = 127; y < 141; y++) {
+    const bulge = (y > 129 && y < 139) ? 1 : 0;
+    for (let x = 104 - bulge; x < 117 + bulge; x++) P(g, x, y, (x - 104) % 3 === 0 ? '#3e2716' : (x < 107 ? '#7a5234' : '#5a3a22'));
+  }
+  R(g, 103, 129, 15, 1, '#3a3a46'); R(g, 103, 137, 15, 1, '#3a3a46');
+  ell(g, 110, 127, 6, 1, '#1a2240'); R(g, 106, 126, 5, 1, '#2d3a66');
+
+  // Roof (two shingled slopes)
+  for (let y = 57; y < 98; y++) {
+    const d = (y - 58) * 1.3;
+    const ol = Math.round(76 - d - 2), il = Math.min(76, Math.round(76 - d + 7));
+    const or = Math.round(76 + d + 2), ir = Math.max(76, Math.round(76 + d - 7));
+    const shade = (x) => {
+      const row = Math.floor((y - 57) / 3);
+      const seam = (x + (row % 2) * 2) % 4 === 0;
+      if ((y - 57) % 3 === 2) return '#1c1424';
+      if (seam) return '#241a2e';
+      return hash(x, row) < 0.25 ? '#44304f' : '#382842';
+    };
+    for (let x = ol; x <= il; x++) P(g, x, y, shade(x));
+    for (let x = ir; x <= or; x++) P(g, x, y, shade(x));
+    P(g, ol, y, '#6a5a88'); P(g, ol + 1, y, '#51416a');
+    P(g, or, y, '#6a5a88'); P(g, or - 1, y, '#51416a');
+  }
+  R(g, 25, 97, 13, 2, '#1a1222'); R(g, 114, 97, 14, 2, '#1a1222');
+  // Eave shadow on wall
+  for (let x = 36; x < 116; x++) if (dither(x, 99, 0.5)) P(g, x, 99, '#21140a');
+  R(g, 36, 98, 80, 1, '#1e1209');
+
+  // Lantern bracket
+  R(g, 66, 104, 7, 1, '#2c2c36'); R(g, 72, 104, 1, 2, '#2c2c36');
+  R(g, 67, 103, 1, 3, '#2c2c36');
+
+  // ---- Wizard yard props ---------------------------------------------------
+  // Stump with open spellbook
+  R(g, 172, 147, 13, 9, '#4a3020'); R(g, 172, 147, 2, 9, '#5e3e28'); R(g, 182, 147, 3, 9, '#35200f');
+  ell(g, 178, 146, 6, 1, '#7a5a3a'); ell(g, 178, 146, 4, 0, '#5a3e26');
+  R(g, 173, 143, 11, 3, '#e6dcc0'); R(g, 178, 143, 1, 3, '#a09478');
+  R(g, 174, 144, 3, 1, '#9a8e76'); R(g, 180, 144, 3, 1, '#9a8e76');
+  R(g, 172, 145, 13, 1, '#6a2a3a');
+
+  // Firewood pile
+  for (let k = 0; k < 3; k++) {
+    for (let j = 0; j < 3 - k; j++) {
+      const x = 238 + j * 6 + k * 3, y = 159 - k * 4;
+      R(g, x - 7, y - 1, 7, 3, '#4a2e18');
+      disc(g, x, y, 2, '#8a6440'); P(g, x, y, '#5a3a22');
+    }
+  }
+
+  // Stones ring around cauldron fire
+  for (let i = 0; i < 7; i++) {
+    const x = 203 + i * 4.5, y = 163 + (i % 2);
+    ell(g, x, y, 2, 1, '#26252f'); R(g, x - 1, y - 1, 3, 1, '#3d3c4a');
+  }
+  return c;
+}
+
+// ---------------------------------------------------------------------------
+// Static layer: foreground silhouettes + vignette
+// ---------------------------------------------------------------------------
+function buildFg() {
+  const c = makeCanvas(W, H), g = c.getContext('2d');
+  const r = rng(314);
+  pine(g, 5, 186, 170, 26, '#05070e', '#101730');
+  pine(g, 314, 188, 160, 24, '#05070e', '#121a34');
+  // Foreground grass
+  for (let x = 0; x < W; x++) {
+    const h = 2 + Math.round(Math.abs(Math.sin(x * 0.13) * 3 + Math.sin(x * 0.37) * 2));
+    R(g, x, H - h, 1, h, '#060a0b');
+    if (r() < 0.25) line(g, x, H - h, x + (r() < 0.5 ? -1 : 1), H - h - 2 - r() * 3, '#070c0d');
+  }
+  // Ferns in corners
+  function fern(x, y, dir, len) {
+    for (let i = 0; i < len; i++) {
+      const px = x + dir * i, py = y - Math.round(Math.sin(i / len * Math.PI) * 6);
+      P(g, px, py, '#081010');
+      if (i % 2 === 0) { P(g, px, py - 1, '#081010'); P(g, px + dir, py + 1, '#081010'); }
+    }
+  }
+  fern(26, 176, 1, 16); fern(30, 178, 1, 12); fern(292, 176, -1, 16); fern(288, 178, -1, 12);
+
+  // Vignette (dithered)
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const dx = (x - W / 2) / (W / 2), dy = (y - H / 2) / (H / 2);
+    const v = (dx * dx * 0.55 + dy * dy * 0.8 - 0.5) * 0.9;
+    if (v > 0 && dither(x, y, v)) P(g, x, y, 'rgba(2,3,8,0.55)');
+  }
+  return c;
+}
+
+const FAR = buildFar(), MID = buildMid(), FG = buildFg();
+
+// ---------------------------------------------------------------------------
+// Sprites
+// ---------------------------------------------------------------------------
+const WIZ = [
+  '..kk..........',
+  '.khhk.........',
+  '..khhk........',
+  '...khhk.......',
+  '...khHhk......',
+  '...khhHhk.....',
+  '..khhhhshk....',
+  '..khhhhHhk....',
+  '.kyyyyyyyyk...',
+  'kkkkkkkkkkkkk.',
+  '...kWffffk....',
+  '...kWfffefk...',
+  '...kwwfffFk...',
+  '...kwwwwwwk...',
+  '...kwwwwwWk...',
+  '..kbwwwwwWbk..',
+  '..kbbwwwWbBk..',
+  '.kbbbbwWbbBk..',
+  '.kbbbbbbbbBk..',
+  '.kgggggggggk..',
+  '.kbbbbbbbbBk..',
+  'kdbbbbbbbbBBk.',
+  'kdbbbbbbbbbBk.',
+  'kddbbbbbbbbBk.',
+  'kddbbbbbbbbbBk',
+  'kkkkkkkkkkkkkk',
+  '..kook..kook..',
+  '..kkkk..kkkk..',
+];
+const WIZ_PAL = {
+  k: '#140c20', h: '#4b3a8c', H: '#7a64c8', s: '#ffe27a', y: '#c9a04a',
+  b: '#3a4a9c', B: '#4f88c8', d: '#26306a',
+  f: '#f0c8a0', F: '#c99a78', e: '#140c20',
+  w: '#e6e6f0', W: '#b0b4cc', g: '#d4a84a', o: '#3a2618',
+};
+const WIZ_PAL_BLINK = Object.assign({}, WIZ_PAL, { e: '#c99a78' });
+
+const CAT = [
+  'c.....c.',
+  'cc...cc.',
+  'cicccicR',
+  'cccccccR',
+  'cyycyycR',
+  'cccnccc.',
+  '.ccccc..',
+  '..ccc...',
+  '.cccccR.',
+  'cccccccR',
+  'cccccccR',
+  'ccccccccR',
+  'ccccccccR',
+  'cccccccc.',
+  'cwc..cwc.',
+];
+const CAT_PAL = { c: '#0b0a12', i: '#3a2233', y: '#c6e64a', n: '#5a3040', R: '#5c3f30', w: '#1e1b28' };
+const CAT_PAL_BLINK = Object.assign({}, CAT_PAL, { y: '#0b0a12' });
+
+// ---------------------------------------------------------------------------
+// Particle definitions (all periodic over LOOP)
+// ---------------------------------------------------------------------------
+const pr = rng(2024);
+const SLOPE = 0.28;
+const farRain = [], nearRain = [];
+for (let i = 0; i < 80; i++) farRain.push({ x: pr() * W, ph: pr(), n: 7 + Math.floor(pr() * 3), land: 118 + pr() * 18, len: 3 });
+for (let i = 0; i < 140; i++) nearRain.push({ x: pr() * W, ph: pr(), n: 10 + Math.floor(pr() * 4), land: 138 + pr() * 42, len: 4 + Math.floor(pr() * 3), bright: pr() < 0.3 });
+
+const smoke = []; for (let i = 0; i < 12; i++) smoke.push({ ph: i / 12 + pr() * 0.03, s: pr() * TAU });
+const steam = []; for (let i = 0; i < 10; i++) steam.push({ ph: i / 10 + pr() * 0.05, s: pr() * TAU, off: (pr() - 0.5) * 12 });
+const bubbles = []; for (let i = 0; i < 5; i++) bubbles.push({ ph: pr(), n: 4 + Math.floor(pr() * 3), id: i });
+const sparks = []; for (let i = 0; i < 7; i++) sparks.push({ ph: pr(), n: 3 + Math.floor(pr() * 3), off: (pr() - 0.5) * 18, s: pr() * TAU });
+const ripples = []; for (const [pi, p] of PUDDLES.entries()) for (let i = 0; i < (pi ? 3 : 5); i++) ripples.push({ p, ph: pr(), n: 3 + Math.floor(pr() * 3), id: pi * 10 + i });
+const drips = [
+  { x: 27, y: 99, ph: 0.1, n: 6, g: 142 }, { x: 125, y: 99, ph: 0.55, n: 5, g: 142 },
+  { x: 80, y: 123, ph: 0.3, n: 7, g: 141 }, { x: 102, y: 123, ph: 0.8, n: 6, g: 141 },
+];
+const flies = [
+  [150, 128], [252, 124], [288, 142], [24, 150], [172, 108], [132, 146], [282, 104], [236, 150], [20, 118],
+].map(([bx, by], i) => ({
+  bx, by, k1: 1 + (i % 2), k2: 2 + (i % 2 ? 1 : 0), k3: 2 + (i % 3),
+  p1: pr() * TAU, p2: pr() * TAU, p3: pr() * TAU, ax: 6 + pr() * 8, ay: 3 + pr() * 5,
+}));
+
+// ---------------------------------------------------------------------------
+// Dynamic drawing
+// ---------------------------------------------------------------------------
+function drawRain(t, arr, col, colBright, splash) {
+  const top = -12;
+  for (const d of arr) {
+    const p = frac(d.ph + d.n * t / LOOP);
+    if (p < 0.9) {
+      const y = top + (d.land - top) * (p / 0.9);
+      const x = d.x - (d.land - y) * SLOPE;
+      for (let i = 0; i < d.len; i++) {
+        const yy = y - i;
+        if (yy > d.land) continue;
+        P(ctx, wrapX(x - i * SLOPE), yy, i === 0 && d.bright ? colBright : col);
+      }
+    } else if (splash) {
+      const s = (p - 0.9) / 0.1, lx = wrapX(d.x), ly = d.land;
+      const pud = PUDDLES.find(pp => inPuddle(pp, lx, ly, 2));
+      if (pud) {
+        ringInPuddle(pud, lx, ly, 1 + s * 3, `rgba(150,170,225,${0.8 * (1 - s)})`);
+      } else {
+        const h = Math.sin(s * Math.PI) * 2;
+        const a = 1 - s * 0.7;
+        P(ctx, lx - 1 - s * 2, ly - h, `rgba(140,160,215,${a})`);
+        P(ctx, lx + 1 + s * 2, ly - h, `rgba(140,160,215,${a})`);
+        if (s < 0.4) P(ctx, lx, ly, 'rgba(160,180,230,0.8)');
+      }
+    }
+  }
+}
+
+function ringInPuddle(p, cx, cy, rx, col) {
+  const ry = Math.max(0.6, rx * 0.35);
+  const n = Math.max(8, Math.round(rx * 6));
+  ctx.fillStyle = col;
+  let lastX = null, lastY = null;
+  for (let i = 0; i < n; i++) {
+    const a = i / n * TAU;
+    const x = Math.round(cx + Math.cos(a) * rx), y = Math.round(cy + Math.sin(a) * ry);
+    if (x === lastX && y === lastY) continue;
+    lastX = x; lastY = y;
+    if (inPuddle(p, x, y)) ctx.fillRect(x, y, 1, 1);
+  }
+}
+
+function drawPuddles(t, lf) {
+  // Shimmering reflections: window/lantern (amber) and cauldron (cyan)
+  const p0 = PUDDLES[0];
+  for (let dy = -p0.ry + 1; dy <= p0.ry - 1; dy++) {
+    const sh = Math.round(Math.sin(TAU * (2 * t / LOOP) + dy * 1.7) * 1.5);
+    const y = p0.y + dy;
+    for (let x = 99 + sh; x < 105 + sh; x++) if (inPuddle(p0, x, y, 1) && dither(x, y + Math.floor(t * 4), 0.55)) P(ctx, x, y, '#b87a3a');
+    const lx = 108 + sh; if (inPuddle(p0, lx, y, 1)) P(ctx, lx, y, lf > 0.9 ? '#ffc060' : '#d8923e');
+  }
+  const p1 = PUDDLES[1];
+  for (let dy = -p1.ry + 1; dy <= p1.ry - 1; dy++) {
+    const sh = Math.round(Math.sin(TAU * (3 * t / LOOP) + dy * 2.1) * 1.5);
+    const y = p1.y + dy;
+    for (let x = 252 + sh; x < 257 + sh; x++) if (inPuddle(p1, x, y, 1) && dither(x, y, 0.6)) P(ctx, x, y, '#2aa6b0');
+  }
+  // Rain ripples
+  for (const r of ripples) {
+    const v = r.ph + r.n * t / LOOP;
+    const a = frac(v), cycle = ((Math.floor(v) % r.n) + r.n) % r.n;
+    const hx = hash(r.id, cycle), hy = hash(r.id + 50, cycle);
+    const cx = r.p.x + (hx * 2 - 1) * (r.p.rx - 4), cy = r.p.y + (hy * 2 - 1) * (r.p.ry - 1);
+    if (a < 0.75) {
+      ringInPuddle(r.p, cx, cy, 1 + a * 6, `rgba(125,145,205,${0.85 * (1 - a / 0.75)})`);
+      if (a > 0.25) ringInPuddle(r.p, cx, cy, 1 + (a - 0.25) * 5, `rgba(100,120,185,${0.6 * (1 - a / 0.75)})`);
+    }
+  }
+}
+
+function drawSmoke(t) {
+  const list = smoke.map(s => ({ s, a: frac(s.ph + 2 * t / LOOP) })).sort((p, q) => q.a - p.a);
+  for (const { s, a } of list) {
+    const fade = Math.min(1, a / 0.12) * (1 - a);
+    const x = CHIMNEY.x + a * 34 + Math.sin(TAU * a * 1.5 + s.s) * 2.5;
+    const y = CHIMNEY.y - a * 50;
+    const rad = 1.5 + a * 5.5;
+    disc(ctx, x, y, rad, `rgba(80,78,100,${0.6 * fade})`);
+    disc(ctx, x - 1, y - 1, rad - 1.5, `rgba(122,120,146,${0.45 * fade})`);
+  }
+}
+
+function drawSteam(t) {
+  for (const s of steam) {
+    const a = frac(s.ph + 4 * t / LOOP);
+    const fade = Math.min(1, a / 0.15) * (1 - a);
+    const x = CAUL.x + s.off * (0.5 + a * 0.6) + Math.sin(TAU * a + s.s) * 3;
+    const y = CAUL.y - 2 - a * 28;
+    const rad = 1 + a * 3.2;
+    disc(ctx, x, y, rad, `rgba(120,230,230,${0.28 * fade})`);
+    disc(ctx, x, y - 1, Math.max(0, rad - 1.5), `rgba(200,255,252,${0.35 * fade})`);
+  }
+}
+
+function drawLantern(lf) {
+  const { x, y } = LANTERN;
+  R(ctx, x - 2, y - 4, 5, 1, '#2c2c36'); R(ctx, x - 1, y - 5, 3, 1, '#3a3a46');
+  R(ctx, x - 3, y - 3, 7, 1, '#3a3440');
+  R(ctx, x - 2, y - 2, 5, 6, lf > 0.9 ? '#ffc450' : '#f0a238');
+  R(ctx, x - 1, y - 1, 3, 4, lf > 0.95 ? '#ffe8a0' : '#ffd070');
+  P(ctx, x, y + 1, '#fff6d0');
+  R(ctx, x - 3, y + 4, 7, 1, '#3a3440'); R(ctx, x - 1, y + 5, 3, 1, '#2c2c36');
+  P(ctx, x - 3, y - 2, '#2c2c36'); P(ctx, x + 3, y - 2, '#2c2c36');
+  P(ctx, x - 3, y + 3, '#2c2c36'); P(ctx, x + 3, y + 3, '#2c2c36');
+}
+
+function catTailEnv(t) {
+  const wins = [[0.8, 2.8], [4.6, 6.0]];
+  for (const [a, b] of wins) if (t > a && t < b) { const s = Math.sin(Math.PI * (t - a) / (b - a)); return s * s; }
+  return 0;
+}
+
+function drawCat(t) {
+  const { x: ox, y: oy } = CAT_O;
+  const env = catTailEnv(t);
+  const sway = env * Math.sin(TAU * 1.5 * t);
+  let x = ox + 7, y = oy + 12, ang = 0.2;
+  const segs = 11;
+  for (let i = 0; i < segs; i++) {
+    const tipness = i / segs;
+    ang += (i > 5 ? -0.3 : -0.02) + sway * 0.22 - env * 0.1 * tipness;
+    x += Math.cos(ang) * 1.4;
+    y = Math.min(oy + 14, y + Math.sin(ang) * 1.4);
+    if (i < 6) R(ctx, Math.round(x), Math.round(y), 2, 2, '#0b0a12');
+    else P(ctx, x, y, '#0b0a12');
+    if (i > 2 && i % 2 === 0) P(ctx, x + 1, y, '#3a2a2a');
+  }
+  const blink = (t > 3.0 && t < 3.15) || (t > 7.2 && t < 7.35);
+  sprite(ctx, CAT, blink ? CAT_PAL_BLINK : CAT_PAL, ox, oy);
+  // Ear twitch
+  if (t > 4.1 && t < 4.25) { P(ctx, ox + 7, oy, '#0b0a12'); P(ctx, ox + 7, oy + 1, '#0b0a12'); }
+}
+
+function drawFire(t, ff) {
+  const cx = CAUL.x, base = 162;
+  // Logs
+  line(ctx, cx - 9, base, cx + 6, base - 2, '#3a2414'); line(ctx, cx - 9, base + 1, cx + 6, base - 1, '#2a1a0e');
+  line(ctx, cx + 9, base, cx - 6, base - 2, '#4a2e18'); line(ctx, cx + 9, base + 1, cx - 6, base - 1, '#2a1a0e');
+  // Flames
+  for (let k = 0; k < 7; k++) {
+    const fx = cx - 9 + k * 3;
+    const h = 4 + Math.round(4 * Math.abs(Math.sin(TAU * (7 + k * 2) * t / LOOP + k * 1.3)) * ff);
+    for (let j = 0; j < h; j++) {
+      const f = j / h;
+      const col = f < 0.4 ? '#ff6a1a' : f < 0.75 ? '#ffae34' : '#ffe68a';
+      const w = f < 0.5 ? 2 : 1;
+      R(ctx, fx + (f > 0.6 ? Math.round(Math.sin(TAU * 5 * t / LOOP + k) * 0.8) : 0), base - 1 - j, w, 1, col);
+    }
+  }
+  // Embers
+  for (let k = 0; k < 5; k++) if (Math.sin(TAU * (9 + k) * t / LOOP + k * 2) > 0.2) P(ctx, cx - 7 + k * 3.5, base, '#ff4a12');
+}
+
+function drawSparks(t) {
+  for (const s of sparks) {
+    const a = frac(s.ph + s.n * t / LOOP);
+    if (a > 0.8) continue;
+    const x = CAUL.x + s.off + Math.sin(TAU * a * 2 + s.s) * 2;
+    const y = 158 - a * 30;
+    P(ctx, x, y, a < 0.4 ? '#ffd060' : '#ff8030');
+  }
+}
+
+function drawCauldron(t, theta) {
+  const cx = CAUL.x, ry = CAUL.y;
+  // Legs
+  R(ctx, cx - 11, 156, 2, 4, '#15131c'); R(ctx, cx + 9, 156, 2, 4, '#15131c');
+  // Body
+  for (let y = 0; y <= 12; y++) {
+    const yy = (y - 5) / (y < 5 ? 9 : 10);
+    const hw = Math.round(14 * Math.sqrt(Math.max(0, 1 - yy * yy)));
+    const py = ry + 1 + y;
+    let base = '#1d1b28';
+    if (y <= 1) base = '#1c3440';
+    else if (y >= 10) base = '#2e1c20';
+    R(ctx, cx - hw, py, hw * 2 + 1, 1, base);
+    P(ctx, cx - hw, py, '#0b0a12'); P(ctx, cx + hw, py, '#0b0a12');
+    if (y >= 2 && y <= 9) { R(ctx, cx - hw + 1, py, 3, 1, '#2f2d42'); P(ctx, cx + hw - 1, py, '#233a4a'); }
+  }
+  R(ctx, cx - 10, ry + 5, 1, 3, '#5a5878'); P(ctx, cx - 9, ry + 4, '#4a4866');
+  // Fire light on the belly
+  for (let x = cx - 8; x <= cx + 8; x++) if (dither(x, ry + 12, 0.5 + 0.2 * Math.sin(TAU * 7 * t / LOOP))) P(ctx, x, ry + 12, '#5a2a18');
+  // Rim + liquid
+  ell(ctx, cx, ry, 13, 2, '#4a4862');
+  R(ctx, cx - 11, ry + 2, 23, 1, '#6a6886');
+  ell(ctx, cx, ry, 11, 1, '#22c2c8');
+  R(ctx, cx - 8, ry - 1, 17, 1, '#1a9aa6');
+  // Swirl highlights following the spoon
+  for (let k = 0; k < 3; k++) {
+    const a = theta + k * TAU / 3;
+    P(ctx, cx + Math.cos(a) * 6, ry + Math.sin(a) * 0.9, '#7ff8f0');
+    P(ctx, cx + Math.cos(a - 0.35) * 7, ry + Math.sin(a - 0.35) * 0.9, '#4ee4e0');
+  }
+  // Bubbles
+  for (const b of bubbles) {
+    const v = b.ph + b.n * t / LOOP;
+    const a = frac(v), cyc = ((Math.floor(v) % b.n) + b.n) % b.n;
+    const bx = cx + (hash(b.id, cyc) * 2 - 1) * 8, by = ry + (hash(b.id + 9, cyc) < 0.5 ? 0 : -1);
+    if (a < 0.5) { P(ctx, bx, by, '#b8fffb'); if (a > 0.25) P(ctx, bx + 1, by, '#8ff8f2'); }
+    else if (a < 0.62) { P(ctx, bx - 1, by - 1, '#d8fffd'); P(ctx, bx + 2, by - 1, '#d8fffd'); P(ctx, bx, by - 2, '#ffffff'); }
+  }
+}
+
+function drawWizard(t, theta) {
+  const lean = Math.round(Math.cos(theta) * 0.6);
+  const ox = WIZ_O.x + lean, oy = WIZ_O.y;
+  const blink = (t > 2.4 && t < 2.55) || (t > 6.9 && t < 7.05);
+  sprite(ctx, WIZ, blink ? WIZ_PAL_BLINK : WIZ_PAL, ox, oy);
+  // Hat star twinkle
+  if (Math.sin(TAU * 2 * t / LOOP) > 0.85) { P(ctx, ox + 7, oy + 5, '#fff6c0'); P(ctx, ox + 8, oy + 6, '#fff6c0'); P(ctx, ox + 6, oy + 6, '#fff6c0'); P(ctx, ox + 7, oy + 7, '#fff6c0'); }
+  return { sx: ox + 10, sy: oy + 16 };
+}
+
+function drawArm(theta, shoulder) {
+  const tip = { x: CAUL.x + Math.cos(theta) * 6.5, y: CAUL.y + Math.sin(theta) * 1 };
+  const hand = { x: 205 + Math.cos(theta) * 2, y: 139 + Math.sin(theta) * 1 };
+  const dx = hand.x - tip.x, dy = hand.y - tip.y, L = Math.hypot(dx, dy) || 1;
+  const top = { x: hand.x + dx / L * 6, y: hand.y + dy / L * 6 };
+  // Spoon
+  line(ctx, top.x, top.y, tip.x, tip.y, '#8a5a30');
+  line(ctx, top.x, top.y - 1, tip.x, tip.y - 1, '#b07a44');
+  P(ctx, tip.x, tip.y, '#1a9aa6');
+  // Arm (sleeve)
+  line(ctx, shoulder.sx, shoulder.sy, hand.x - 1, hand.y + 1, '#3a4a9c');
+  line(ctx, shoulder.sx, shoulder.sy + 1, hand.x - 1, hand.y + 2, '#26306a');
+  line(ctx, shoulder.sx + 1, shoulder.sy - 1, hand.x, hand.y, '#4f88c8');
+  P(ctx, hand.x - 1, hand.y + 1, '#5f98d8');
+  // Hand
+  R(ctx, Math.round(hand.x), Math.round(hand.y), 2, 2, '#f0c8a0');
+  P(ctx, hand.x + 1, hand.y + 1, '#c99a78');
+}
+
+function drawDrips(t) {
+  for (const d of drips) {
+    const a = frac(d.ph + d.n * t / LOOP);
+    if (a < 0.55) {
+      if (a > 0.2) P(ctx, d.x, d.y, '#7f94c8');
+    } else if (a < 0.92) {
+      const f = (a - 0.55) / 0.37;
+      P(ctx, d.x, d.y + f * f * (d.g - d.y), '#9fb2e2');
+    } else {
+      const s = (a - 0.92) / 0.08;
+      P(ctx, d.x - 1 - s, d.g - 1, 'rgba(150,170,225,0.8)');
+      P(ctx, d.x + 1 + s, d.g - 1, 'rgba(150,170,225,0.8)');
+    }
+  }
+}
+
+function drawFireflies(t) {
+  for (const f of flies) {
+    const x = f.bx + f.ax * Math.sin(TAU * f.k1 * t / LOOP + f.p1);
+    const y = f.by + f.ay * Math.sin(TAU * f.k2 * t / LOOP + f.p2);
+    const b = Math.pow(0.5 + 0.5 * Math.sin(TAU * f.k3 * t / LOOP + f.p3), 3);
+    if (b > 0.08) {
+      ctx.globalCompositeOperation = 'lighter';
+      disc(ctx, x, y, 2, `rgba(170,255,90,${0.14 * b})`);
+      disc(ctx, x, y, 1, `rgba(200,255,120,${0.22 * b})`);
+      ctx.globalCompositeOperation = 'source-over';
+    }
+    P(ctx, x, y, b > 0.35 ? '#f4ff9a' : b > 0.08 ? '#b8d860' : '#4a5a2a');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Frame
+// ---------------------------------------------------------------------------
+function render(t) {
+  const theta = TAU * t / 2;                                     // 4 stirs per loop
+  const lf = 0.85 + 0.08 * Math.sin(TAU * 5 * t / LOOP) + 0.07 * Math.sin(TAU * 13 * t / LOOP + 1.3);
+  const ff = 0.85 + 0.1 * Math.sin(TAU * 9 * t / LOOP) + 0.05 * Math.sin(TAU * 17 * t / LOOP + 0.7);
+  const cp = 1 + 0.08 * Math.sin(TAU * 2 * t / LOOP);             // cauldron pulse
+  const wf = 0.9 + 0.1 * Math.sin(TAU * 3 * t / LOOP);             // window flicker
+
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 1;
+  ctx.drawImage(FAR, 0, 0);
+  drawRain(t, farRain, '#263152', '#33406a', false);
+  drawSmoke(t);
+  ctx.drawImage(MID, 0, 0);
+
+  drawPuddles(t, lf);
+  drawDrips(t);
+  drawLantern(lf);
+  drawCat(t);
+
+  const shoulder = drawWizard(t, theta);
+  drawFire(t, ff);
+  drawCauldron(t, theta);
+  drawArm(theta, shoulder);
+  drawSparks(t);
+  drawSteam(t);
+
+  // Lights (additive, banded)
+  glow(90, 112, 28, '255,170,80', 0.022 * wf, 4);
+  glow(76, 80, 10, '255,160,70', 0.03 * wf, 2);
+  glow(LANTERN.x, LANTERN.y + 1, 30 * lf, '255,160,60', 0.04 * lf, 5);
+  glow(CAUL.x, CAUL.y - 2, 46 * cp, '40,210,215', 0.032 * cp, 6);
+  glow(CAUL.x, 160, 18 * ff, '255,110,40', 0.05 * ff, 4);
+  glow(283, 162, 7, '60,210,200', 0.05, 2);
+  glow(155, 149, 6, '60,210,200', 0.05, 2);
+
+  drawFireflies(t);
+  ctx.drawImage(FG, 0, 0);
+  drawRain(t, nearRain, '#56689a', '#93a6da', true);
+
+  sctx.imageSmoothingEnabled = false;
+  sctx.drawImage(buf, 0, 0, screen.width, screen.height);
+}
+
+const start = performance.now();
+function frame(now) {
+  const t = ((now - start) / 1000) % LOOP;   // exact 8-second loop
+  render(t);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

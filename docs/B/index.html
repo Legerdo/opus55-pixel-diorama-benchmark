@@ -1,0 +1,846 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rainy Night at the Wizard's Cabin</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #070b10; }
+  body { display: flex; align-items: center; justify-content: center; overflow: hidden; }
+  canvas { display: block; image-rendering: pixelated; image-rendering: crisp-edges; }
+</style>
+</head>
+<body>
+<canvas id="screen" role="img"
+  aria-label="Animated pixel-art diorama: on a rainy night in the forest, a small wizard stirs a glowing cyan cauldron beside a wooden cabin with a warm amber lantern. A black cat sits under the window flicking its tail, smoke rises from the chimney, steam drifts from the cauldron, fireflies blink and raindrops ripple in the puddles."></canvas>
+<script>
+'use strict';
+
+// ---------------------------------------------------------------------------
+// Config
+// ---------------------------------------------------------------------------
+const W = 320, H = 180, LOOP = 8, TAU = Math.PI * 2;
+
+// Core palette (32 colors). Every pixel in the scene uses one of these.
+const C = {
+  sky1: '#111830', sky2: '#1a2544', cloud: '#253252', cloudLit: '#56628a',
+  treeFar: '#13223a', treeMid: '#0d1a22', black: '#070b10',
+  grassDark: '#14291e', grass: '#1f3d27', grassLit: '#3f5a2a',
+  dirt: '#33261f', dirtLit: '#6a4a2c',
+  woodDark: '#3a2214', wood: '#603a20', woodLight: '#8c5a30',
+  roofDark: '#251b30', roof: '#3e2d48',
+  stoneDark: '#30343f', stone: '#545a6c',
+  amberDeep: '#d9772b', amber: '#ffb44a', amberPale: '#ffe6a0',
+  cyanDeep: '#178f9c', cyan: '#3ef2df', cyanPale: '#c2fff5', cyanGround: '#1c4744',
+  robeDark: '#33235c', robe: '#5b3d9e', skin: '#e6b089', beard: '#e4e0d6',
+  rain: '#7f90c2', firefly: '#dcf76a'
+};
+
+// ---------------------------------------------------------------------------
+// Pixel helpers (every final coordinate is rounded to the integer grid)
+// ---------------------------------------------------------------------------
+let ctx = null;
+function makeLayer() {
+  const c = document.createElement('canvas');
+  c.width = W; c.height = H;
+  const x = c.getContext('2d');
+  x.imageSmoothingEnabled = false;
+  return [c, x];
+}
+function rect(x, y, w, h, c) {
+  ctx.fillStyle = c;
+  ctx.fillRect(Math.round(x), Math.round(y), Math.round(w), Math.round(h));
+}
+function px(x, y, c) { rect(x, y, 1, 1, c); }
+function hline(x0, x1, y, c) {
+  x0 = Math.round(x0); x1 = Math.round(x1);
+  if (x1 < x0) { const s = x0; x0 = x1; x1 = s; }
+  rect(x0, y, x1 - x0 + 1, 1, c);
+}
+// Pixel disc with a slightly fuller profile (reads rounder at tiny radii)
+function disc(cx, cy, r, c, maxY) {
+  cx = Math.round(cx); cy = Math.round(cy); r = Math.round(r);
+  if (r <= 0) { px(cx, cy, c); return; }
+  const rr = r * r + r * 0.8;
+  for (let dy = -r; dy <= r; dy++) {
+    if (maxY !== undefined && cy + dy > maxY) break;
+    let w = 0;
+    while ((w + 1) * (w + 1) + dy * dy <= rr) w++;
+    hline(cx - w, cx + w, cy + dy, c);
+  }
+}
+function ellipseFill(cx, cy, rx, ry, c) {
+  for (let dy = -ry; dy <= ry; dy++) {
+    const f = dy / (ry + 0.5);
+    const w = Math.round(rx * Math.sqrt(Math.max(0, 1 - f * f)));
+    hline(cx - w, cx + w, cy + dy, c);
+  }
+}
+function line(x0, y0, x1, y1, c, th) {
+  x0 = Math.round(x0); y0 = Math.round(y0); x1 = Math.round(x1); y1 = Math.round(y1);
+  th = th || 1;
+  const dx = Math.abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
+  const dy = -Math.abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
+  let err = dx + dy;
+  for (;;) {
+    rect(x0, y0, th, th, c);
+    if (x0 === x1 && y0 === y1) break;
+    const e2 = 2 * err;
+    if (e2 >= dy) { err += dy; x0 += sx; }
+    if (e2 <= dx) { err += dx; y0 += sy; }
+  }
+}
+function sprite(rows, x, y, map) {
+  for (let j = 0; j < rows.length; j++) {
+    const r = rows[j];
+    for (let i = 0; i < r.length; i++) {
+      const col = map[r[i]];
+      if (col) px(x + i, y + j, col);
+    }
+  }
+}
+function rng(seed) {
+  return function () {
+    seed |= 0; seed = seed + 0x6D2B79F5 | 0;
+    let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+
+// Tiered pine silhouette with an optional moon-side (right) rim.
+function pine(cx, base, h, w, col, rim, tierH) {
+  const tiers = Math.max(2, Math.round(h / (tierH || 11)));
+  const th = h / tiers;
+  for (let y = 0; y < h; y++) {
+    const tier = Math.min(tiers - 1, Math.floor(y / th));
+    const f = (y - tier * th) / th;
+    const tw = w * (0.28 + 0.72 * (tier + 1) / tiers);
+    const start = tier === 0 ? 0 : 0.35;
+    const half = Math.round(tw * (start + (1 - start) * f) / 2);
+    const yy = base - h + y;
+    hline(cx - half, cx + half, yy, col);
+    if (rim && half >= 2 && f > 0.15 && f < 0.9) {
+      const rw = Math.max(1, Math.round(half * 0.3));
+      hline(cx + half - rw + 1, cx + half, yy, rim);
+    }
+  }
+  rect(cx - 1, base, 3, 3, col);
+}
+function cloudBank(blobs, baseY, body, rimC) {
+  for (const [x, y, r] of blobs) disc(x, y - 1, r, rimC, baseY);
+  for (const [x, y, r] of blobs) disc(x, y, r, body, baseY);
+}
+
+// ---------------------------------------------------------------------------
+// Scene constants
+// ---------------------------------------------------------------------------
+const CAB = { x0: 32, x1: 126, top: 96, bottom: 146, peakX: 79, peakY: 52 };
+const CAULDRON_X = 205;
+const WIZ_X = 178, WIZ_Y = 134;
+const CAT_X = 58, CAT_Y = 141;
+
+function pathAt(y) {
+  const k = y - 148;
+  return { cx: Math.round(91 + k * 1.15 + Math.sin(k / 7) * 2), half: Math.round(4 + k * 0.3) };
+}
+
+// Puddles: unions of small ellipses, stored in a mask (value = puddle id + 1)
+const PUDDLES = [
+  [[246, 167, 16, 3], [234, 169, 9, 2], [259, 165, 8, 2]],
+  [[112, 160, 7, 2], [105, 161, 4, 1]]
+];
+const pmask = new Uint8Array(W * H);
+PUDDLES.forEach((list, id) => {
+  for (const [cx, cy, rx, ry] of list) {
+    for (let y = cy - ry - 1; y <= cy + ry + 1; y++) {
+      for (let x = cx - rx - 1; x <= cx + rx + 1; x++) {
+        const dx = (x - cx) / (rx + 0.5), dy = (y - cy) / (ry + 0.5);
+        if (dx * dx + dy * dy <= 1 && x >= 0 && x < W && y >= 0 && y < H) pmask[y * W + x] = id + 1;
+      }
+    }
+  }
+});
+const inPuddle = (x, y, id) => x >= 0 && x < W && y >= 0 && y < H && pmask[y * W + x] === id + 1;
+
+// ---------------------------------------------------------------------------
+// Static background
+// ---------------------------------------------------------------------------
+function drawBackground() {
+  const r = rng(1337);
+
+  // Sky: flat bands with sparse line transitions (no smooth gradient)
+  rect(0, 0, W, H, C.sky1);
+  for (const y of [60, 64, 67, 69, 71]) hline(0, W - 1, y, C.sky2);
+  rect(0, 72, W, H - 72, C.sky2);
+  for (const y of [94, 97, 99]) hline(0, W - 1, y, C.cloud);
+  rect(0, 100, W, H - 100, C.cloud);
+
+  // Moon with stepped halo
+  disc(262, 26, 14, C.sky2);
+  disc(262, 26, 12, C.cloud);
+  disc(262, 26, 9, C.beard);
+  rect(257, 22, 3, 2, C.cloudLit);
+  rect(264, 28, 3, 2, C.cloudLit);
+  rect(260, 30, 2, 1, C.cloudLit);
+  hline(254, 255, 24, C.cloudLit); hline(254, 254, 25, C.cloudLit);
+
+  // Cloud banks
+  cloudBank([[222, 42, 6], [234, 38, 8], [247, 36, 9], [260, 40, 9], [274, 38, 10], [289, 41, 8], [303, 43, 7], [316, 40, 8]], 46, C.cloud, C.cloudLit);
+  cloudBank([[18, 28, 6], [30, 24, 8], [45, 21, 10], [61, 24, 8], [74, 28, 6]], 32, C.cloud, C.sky2);
+  cloudBank([[124, 48, 5], [136, 44, 8], [151, 42, 9], [165, 46, 7], [177, 49, 5]], 52, C.cloud, C.sky2);
+  cloudBank([[186, 14, 4], [196, 11, 6], [208, 13, 5]], 17, C.sky2, C.cloud);
+
+  // Far pine line
+  for (let x = -8; x < W + 10; x += 6 + Math.floor(r() * 5)) {
+    pine(x, 118 + Math.floor(r() * 5), 26 + Math.floor(r() * 18), 13 + Math.floor(r() * 7), C.treeFar, null, 9);
+  }
+  rect(0, 118, W, 30, C.treeFar);
+
+  // Mid pine line (moon rim on the right)
+  for (let x = -6; x < W + 12; x += 13 + Math.floor(r() * 8)) {
+    pine(x, 148, 48 + Math.floor(r() * 30), 22 + Math.floor(r() * 9), C.treeMid, C.treeFar, 12);
+  }
+  rect(0, 142, W, 6, C.treeMid);
+
+  // Ground
+  rect(0, 146, W, H - 146, C.grassDark);
+  ellipseFill(160, 171, 34, 4, C.grass);
+  ellipseFill(40, 161, 22, 3, C.grass);
+  ellipseFill(272, 157, 24, 3, C.grass);
+  ellipseFill(206, 177, 44, 3, C.grass);
+  ellipseFill(70, 175, 26, 3, C.grass);
+
+  // Dirt path from the door
+  for (let y = 148; y < H; y++) {
+    const p = pathAt(y);
+    hline(p.cx - p.half, p.cx + p.half, y, C.dirt);
+  }
+  for (let i = 0; i < 9; i++) {
+    const y = 152 + Math.floor(r() * 26);
+    const p = pathAt(y);
+    const x = p.cx - p.half + 2 + Math.floor(r() * Math.max(1, p.half * 2 - 4));
+    rect(x, y, 2 + Math.floor(r() * 2), 1, C.stone);
+    rect(x, y + 1, 2, 1, C.stoneDark);
+  }
+
+  // Grass tufts: denser toward the viewer
+  for (let i = 0; i < 150; i++) {
+    const y = 150 + Math.floor(Math.sqrt(r()) * 29);
+    const x = Math.floor(r() * W);
+    const p = pathAt(y);
+    if (Math.abs(x - p.cx) <= p.half + 2) continue;
+    if (pmask[y * W + x] || pmask[Math.min(H - 1, y + 1) * W + x]) continue;
+    if (x > 190 && x < 222 && y < 163) continue; // under cauldron
+    const col = r() < 0.6 ? C.grass : C.grassLit;
+    px(x, y - 2, col); px(x - 1, y - 1, col); px(x + 1, y - 1, col);
+    hline(x - 1, x + 1, y, col);
+  }
+
+  // Rocks
+  for (const [x, y, w] of [[150, 158, 4], [276, 171, 5], [22, 158, 3], [228, 158, 3]]) {
+    rect(x, y, w, 2, C.stoneDark);
+    rect(x + 1, y - 1, w - 1, 1, C.stone);
+  }
+
+  // Puddle bases
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const m = pmask[y * W + x];
+    if (!m) continue;
+    const up = pmask[(y - 1) * W + x];
+    px(x, y, up ? C.sky2 : C.treeMid);
+    if (y + 1 < H && !pmask[(y + 1) * W + x]) px(x, y + 1, C.dirt);
+  }
+
+  drawCabin();
+
+  // Stack of spell books near the wizard
+  rect(164, 158, 11, 3, C.robeDark); hline(164, 174, 158, C.robe); px(174, 159, C.beard); px(174, 160, C.beard);
+  rect(165, 155, 9, 3, C.woodDark); hline(165, 173, 155, C.woodLight); px(173, 156, C.beard);
+  rect(166, 153, 7, 2, C.cyanDeep); px(172, 154, C.beard);
+}
+
+function drawCabin() {
+  const { x0, x1, top, bottom, peakX, peakY } = CAB;
+  const r = rng(99);
+
+  // Chimney (behind roof)
+  rect(104, 56, 9, 28, C.stoneDark);
+  for (let row = 0; row < 9; row++) {
+    const y = 58 + row * 3;
+    const off = (row % 2) * 2;
+    for (let bx = 104 - off; bx < 113; bx += 4) {
+      const a = Math.max(104, bx), b = Math.min(112, bx + 2);
+      if (b >= a) rect(a, y, b - a + 1, 2, C.stone);
+    }
+  }
+  rect(102, 55, 13, 1, C.stone);
+  rect(102, 56, 13, 2, C.stoneDark);
+
+  // Log walls
+  for (let k = 0; k * 5 + top < bottom; k++) {
+    const y = top + k * 5;
+    hline(x0, x1, y, C.woodLight);
+    rect(x0, y + 1, x1 - x0 + 1, 3, C.wood);
+    hline(x0, x1, y + 4, C.woodDark);
+    // Sparse grain strokes
+    for (let g = 0; g < 3; g++) {
+      const gx = x0 + 4 + Math.floor(r() * (x1 - x0 - 12));
+      hline(gx, gx + 2 + Math.floor(r() * 4), y + 2, C.woodDark);
+    }
+  }
+  // Log ends at the corners
+  const LOGEND = ['.DDD.', 'DLLLD', 'DLwLD', 'DLLLD', '.DDD.'];
+  const lmap = { D: C.woodDark, L: C.woodLight, w: C.wood };
+  for (let k = 0; k * 5 + top < bottom; k++) {
+    sprite(LOGEND, x0 - 3, top + k * 5, lmap);
+    sprite(LOGEND, x1 - 1, top + k * 5, lmap);
+  }
+
+  // Foundation
+  rect(x0 - 3, bottom, x1 - x0 + 7, 3, C.stoneDark);
+  for (let x = x0 - 3; x < x1 + 3; x += 6) hline(x, x + 4, bottom, C.stone);
+
+  // Window with shutters and silhouettes of potions inside
+  rect(37, 103, 4, 19, C.wood); rect(38, 103, 1, 19, C.woodDark);
+  rect(62, 103, 4, 19, C.wood); rect(64, 103, 1, 19, C.woodDark);
+  rect(41, 103, 21, 19, C.woodDark);
+  rect(43, 105, 17, 15, C.amber);
+  rect(44, 106, 4, 2, C.amberPale); rect(44, 108, 2, 1, C.amberPale);
+  rect(56, 105, 2, 4, C.amberDeep); px(57, 109, C.amberDeep);                 // herbs
+  rect(53, 116, 3, 4, C.amberDeep); px(54, 115, C.amberDeep);                 // round bottle
+  rect(57, 117, 2, 3, C.amberDeep); px(57, 116, C.amberDeep);                 // thin bottle
+  rect(51, 105, 1, 15, C.woodDark);
+  rect(43, 112, 17, 1, C.woodDark);
+  rect(40, 121, 23, 2, C.woodLight); hline(40, 62, 123, C.woodDark);
+
+  // Door
+  rect(83, 117, 17, 29, C.woodDark); rect(85, 116, 13, 1, C.woodDark);
+  rect(85, 119, 13, 27, C.wood); rect(87, 118, 9, 1, C.wood);
+  for (const x of [89, 93]) rect(x, 119, 1, 27, C.woodDark);
+  for (const x of [86, 90, 94]) rect(x, 120, 1, 24, C.woodLight);
+  rect(85, 123, 7, 1, C.black); rect(85, 140, 7, 1, C.black);
+  px(96, 132, C.amber); px(96, 133, C.amberDeep);
+  // Step
+  rect(81, 146, 21, 2, C.stone); rect(81, 148, 21, 2, C.stoneDark);
+
+  // Lantern bracket (lantern body is animated)
+  hline(100, 111, 102, C.woodDark);
+  line(100, 107, 104, 103, C.woodDark);
+  px(110, 103, C.black); px(110, 104, C.black);
+
+  // Front gable roof
+  for (let y = peakY; y <= 97; y++) {
+    const o = Math.round((y - peakY) * 1.15) + 2;
+    const L = peakX - o, R = peakX + o;
+    hline(L, R, y, C.roof);
+    if (o >= 8) {
+      const iL = L + 8, iR = R - 8;
+      if (iR >= iL) {
+        if (y >= 96) {
+          hline(iL, iR, y, C.woodDark); // eave shadow
+        } else {
+          for (let x = iL; x <= iR; x++) px(x, y, ((x - peakX) % 6 + 6) % 6 === 0 ? C.woodDark : C.wood);
+        }
+      }
+      px(L + 5, y, C.woodLight); px(L + 6, y, C.wood); px(L + 7, y, C.woodDark);
+      px(R - 5, y, C.woodLight); px(R - 6, y, C.wood); px(R - 7, y, C.woodDark);
+    }
+    if ((y - peakY) % 4 === 3) {
+      hline(L, Math.min(L + 4, peakX), y, C.roofDark);
+      hline(Math.max(R - 4, peakX), R, y, C.roofDark);
+    }
+    px(L, y, C.roofDark);
+    px(R, y, C.cloudLit);
+  }
+  rect(peakX - 1, peakY - 3, 3, 3, C.woodDark);
+  px(peakX, peakY - 5, C.black); px(peakX, peakY - 4, C.black);
+  px(peakX + 1, peakY - 6, C.amberDeep); px(peakX, peakY - 7, C.amberDeep); // tiny crescent vane
+
+  // Round attic window
+  disc(peakX, 80, 4, C.woodDark);
+  disc(peakX, 80, 3, C.amber);
+  rect(peakX - 2, 78, 2, 1, C.amberPale); px(peakX - 2, 79, C.amberPale);
+  hline(peakX - 3, peakX + 3, 80, C.woodDark);
+  rect(peakX, 77, 1, 7, C.woodDark);
+
+  // Woodpile with a plank cover
+  const woodEnd = ['.DDD.', 'DLLLD', 'DLwLD', 'DLLLD', '.DDD.'];
+  for (const [x, y] of [[130, 141], [135, 141], [140, 141], [132, 137], [137, 137], [134, 133], [139, 133]]) sprite(woodEnd, x, y, lmap);
+  rect(128, 130, 19, 2, C.woodDark); hline(128, 146, 130, C.woodLight);
+}
+
+// ---------------------------------------------------------------------------
+// Palette-indexed lighting: remaps specific palette colors inside stepped
+// elliptical zones. No blending, so the palette stays closed.
+// ---------------------------------------------------------------------------
+const key = h => parseInt(h.slice(1), 16);
+function buildMap(pairs) {
+  const m = new Map();
+  for (const [a, b] of pairs) m.set(key(C[a]), key(C[b]));
+  return m;
+}
+const WARM = buildMap([
+  ['grassDark', 'grass'], ['grass', 'grassLit'], ['dirt', 'dirtLit'],
+  ['woodDark', 'wood'], ['wood', 'woodLight'], ['stoneDark', 'stone'], ['roofDark', 'roof']
+]);
+const CYAN = buildMap([
+  ['grassDark', 'cyanGround'], ['grass', 'cyanGround'], ['grassLit', 'cyanGround'],
+  ['dirt', 'cyanGround'], ['dirtLit', 'cyanGround'], ['stoneDark', 'stone']
+]);
+
+function bakeLit(base, lights) {
+  const [c, x] = makeLayer();
+  x.drawImage(base, 0, 0);
+  const id = x.getImageData(0, 0, W, H), d = id.data;
+  for (let y = 0; y < H; y++) for (let X = 0; X < W; X++) {
+    const i = (y * W + X) * 4;
+    let k = (d[i] << 16) | (d[i + 1] << 8) | d[i + 2];
+    for (const L of lights) {
+      if (y < L.minY) continue;
+      const dx = (X - L.x) / L.rx, dy = (y - L.y) / L.ry;
+      const e = dx * dx + dy * dy;
+      const steps = e < L.inner * L.inner ? 2 : e < 1 ? 1 : 0;
+      for (let s = 0; s < steps; s++) {
+        const n = L.map.get(k);
+        if (n === undefined) break;
+        k = n;
+      }
+    }
+    d[i] = (k >> 16) & 255; d[i + 1] = (k >> 8) & 255; d[i + 2] = k & 255;
+  }
+  x.putImageData(id, 0, 0);
+  return c;
+}
+function lightsFor(dim, big) {
+  return [
+    { x: 110, y: 114, rx: dim ? 36 : 40, ry: dim ? 27 : 30, inner: 0.5, map: WARM, minY: 98 },
+    { x: 51, y: 151, rx: 17, ry: 6, inner: 0, map: WARM, minY: 120 },
+    { x: 79, y: 80, rx: 9, ry: 8, inner: 0, map: WARM, minY: 0 },
+    { x: CAULDRON_X, y: 157, rx: big ? 36 : 32, ry: big ? 13 : 11, inner: 0, map: CYAN, minY: 146 }
+  ];
+}
+
+// ---------------------------------------------------------------------------
+// Foreground layer (framing trees and bushes, unlit)
+// ---------------------------------------------------------------------------
+function drawForeground() {
+  pine(-3, 184, 196, 38, C.black, C.treeMid, 21);
+  pine(322, 184, 196, 46, C.black, C.treeMid, 21);
+  const bushes = [
+    [[0, 168, 8], [9, 172, 9], [21, 176, 8], [33, 179, 6], [14, 166, 4], [27, 171, 3]],
+    [[313, 170, 10], [299, 175, 8], [288, 179, 6], [305, 164, 4], [292, 171, 3]]
+  ];
+  for (const b of bushes) {
+    for (const [x, y, rr] of b) disc(x + 1, y - 1, rr, C.treeMid);
+    for (const [x, y, rr] of b) disc(x, y, rr, C.black);
+  }
+  // Tall foreground blades
+  for (const [x, h, lean] of [[40, 7, -1], [42, 9, 1], [44, 6, 2], [278, 8, -2], [281, 10, 0], [283, 6, 2], [150, 5, -1], [152, 7, 1]]) {
+    line(x, 179, x + lean, 179 - h, C.black);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Sprites
+// ---------------------------------------------------------------------------
+const WIZ = [
+  '...........HH...',
+  '..........HH....',
+  '.........HHh....',
+  '........HHHh....',
+  '........HHhh....',
+  '.......HHHhh....',
+  '.......HHhhh....',
+  '......HHHhhhh...',
+  '......HHHhhhh...',
+  '.....HbbbYbbh...',
+  '...HHHHHHhhhhhh.',
+  '......DDssksss..',
+  '......Dwwwwwss..',
+  '.....DDwwwwww...',
+  '.....DRwwwwwwR..',
+  '....DDRRwwwwRR..',
+  '....DDRRRwwwRR..',
+  '...DDDRRRwwRRR..',
+  '...DDDRRRRwRRR..',
+  '...DDDRRRRRRRR..',
+  '..DDDDRRRRRRRRR.',
+  '..DDDDRRRRRRRRR.',
+  '..DDDDRRRRRRRRR.',
+  '..DDDDDRRRRRRRR.',
+  '..DDDDDRRRRRRRRR',
+  '.DDDDDDRRRRRRRRR',
+  '.DDDDDDDRRRRRRR.',
+  '..kkk.....kkkk..'
+];
+const WIZ_MAP = {
+  H: C.robeDark, h: C.robe, b: C.amberDeep, Y: C.amberPale,
+  D: C.robeDark, R: C.robe, s: C.skin, k: C.black, w: C.beard
+};
+// Cauldron-side rim pixels (rightmost pixel of each row from the hat brim down)
+const WIZ_RIM = [];
+for (let j = 9; j <= 26; j++) {
+  const idx = Math.max(WIZ[j].lastIndexOf('R'), WIZ[j].lastIndexOf('h'), WIZ[j].lastIndexOf('w'));
+  if (idx >= 0) WIZ_RIM.push([idx, j]);
+}
+
+const CAT = [
+  '.......1...1',
+  '.......11.11',
+  '.......11111',
+  '.......1e1e1',
+  '.......11111',
+  '........111.',
+  '......11111.',
+  '.....11111r.',
+  '....111111r.',
+  '....111111r.',
+  '....1111111.',
+  '....11111.11'
+];
+const TAIL = {
+  rest: [[-1, 0], [-2, 0], [-3, 0], [-4, 0], [-5, -1], [-6, -2], [-6, -3]],
+  D:    [[-1, 0], [-2, 0], [-3, 0], [-4, 0], [-5, -1], [-5, -2], [-4, -3]],
+  A:    [[-1, 0], [-2, -1], [-3, -2], [-4, -3], [-4, -4], [-4, -5], [-3, -6]],
+  B:    [[-1, 0], [-2, -1], [-3, -2], [-3, -3], [-3, -4], [-2, -5], [-1, -6]],
+  C:    [[-1, 0], [-2, 0], [-3, -1], [-4, -2], [-5, -3], [-6, -4], [-6, -5]]
+};
+
+// ---------------------------------------------------------------------------
+// Animated elements (every motion has a period that divides 8 s)
+// ---------------------------------------------------------------------------
+const rr = rng(4242);
+const farRain = [], nearRain = [];
+for (let i = 0; i < 110; i++) farRain.push({ x: Math.floor(rr() * 330), y: rr() * 200, m: 4, len: 3, gy: 146 + Math.floor(rr() * 14) });
+for (let i = 0; i < 80; i++) nearRain.push({ x: Math.floor(rr() * 330), y: rr() * 200, m: 6 + Math.floor(rr() * 2), len: 5, gy: 150 + Math.floor(rr() * 30) });
+
+// Speed is 25*m px/s, so over 8 s every drop travels exactly m*200 px: seamless wrap.
+function drawRain(list, t, baseCol, splash) {
+  for (const d of list) {
+    const speed = d.m * 25;
+    const yw = ((d.y + speed * t) % 200) - 16;
+    const head = Math.floor(yw);
+    const lx = yy => ((d.x + Math.floor(yy / 4)) % 330 + 330) % 330 - 5;
+    let col = baseCol;
+    if (splash) {
+      const hx = lx(head);
+      const lxn = (hx - 110) / 40, lyn = (head - 112) / 30;
+      const cxn = (hx - CAULDRON_X) / 26, cyn = (head - 138) / 22;
+      if (lxn * lxn + lyn * lyn < 1) col = C.amber;
+      else if (cxn * cxn + cyn * cyn < 1) col = C.cyanPale;
+    }
+    for (let k = 0; k < d.len; k++) {
+      const yy = head - k;
+      if (yy < 0 || yy >= d.gy) continue;
+      px(lx(yy), yy, col);
+    }
+    if (splash) {
+      const sl = speed * 0.12;
+      if (yw >= d.gy && yw < d.gy + sl) {
+        const st = (yw - d.gy) / sl, x = lx(d.gy), g = d.gy;
+        if (st < 0.5) { px(x - 1, g - 1, C.rain); px(x + 1, g - 1, C.rain); }
+        else { px(x - 2, g - 2, C.rain); px(x + 2, g - 2, C.rain); }
+      }
+    }
+  }
+}
+
+// Drips from the eaves: 1.6 s period
+const DRIPS = [[25, 98, 147, 0], [133, 98, 129, 0.5], [110, 116, 157, 0.25]];
+function drawDrips(t) {
+  for (const [x, y0, gy, ph] of DRIPS) {
+    const a = ((t / 1.6) + ph) % 1;
+    if (a < 0.5) {
+      px(x, y0, C.rain);
+      if (a > 0.25) px(x, y0 + 1, C.rain);
+    } else if (a < 0.75) {
+      const f = (a - 0.5) / 0.25;
+      const y = Math.round(y0 + 1 + f * f * (gy - y0 - 1));
+      px(x, y, C.rain); px(x, y - 1, C.rain);
+    } else if (a < 0.87) {
+      px(x - 1, gy - 1, C.rain); px(x + 1, gy - 1, C.rain);
+    } else if (a < 0.97) {
+      px(x - 2, gy - 2, C.rain); px(x + 2, gy - 1, C.rain);
+    }
+  }
+}
+
+// Chimney smoke: one continuous plume of puffs, 4 s period
+function drawSmoke(t) {
+  const N = 7, ages = [];
+  for (let i = 0; i < N; i++) ages.push(((t / 4) + i / N) % 1);
+  ages.sort((p, q) => q - p);
+  for (const a of ages) {
+    const y = 53 - a * 58;
+    const x = 108 + a * a * 30 + Math.sin(a * TAU * 1.2) * 2;
+    let r = a < 0.08 ? 1 : Math.min(6, 1 + Math.floor(a * 7));
+    let rim = C.stone, body = C.stoneDark;
+    if (a > 0.5) { rim = C.stoneDark; body = C.cloud; }
+    if (a > 0.8) { rim = C.cloud; body = C.cloud; r = Math.max(2, r - Math.floor((a - 0.8) * 20)); }
+    disc(x, y, r, rim);
+    if (r >= 2) disc(x - 1, y + 1, r - 1, body);
+  }
+}
+
+// Cauldron steam: 2 s period
+function drawSteam(t) {
+  const N = 8, list = [];
+  for (let i = 0; i < N; i++) list.push({ a: ((t / 2) + i / N) % 1, i });
+  list.sort((p, q) => q.a - p.a);
+  for (const { a, i } of list) {
+    const x = CAULDRON_X + ((i * 37) % 7 - 3) + Math.sin(TAU * a * 0.9 + i * 1.7) * 2 + a * 5;
+    const y = 141 - a * 26;
+    const r = a < 0.15 ? 0 : a < 0.45 ? 1 : a < 0.8 ? 2 : 1;
+    let rim, body;
+    if (a < 0.3) { rim = C.cyanPale; body = C.cyanPale; }
+    else if (a < 0.6) { rim = C.cyanPale; body = C.cyanDeep; }
+    else if (a < 0.85) { rim = C.cloudLit; body = C.cloud; }
+    else { rim = C.cloud; body = C.cloud; }
+    disc(x, y, r, rim);
+    if (r >= 2) disc(x - 1, y + 1, r - 1, body);
+  }
+}
+
+function drawWindow(t) {
+  const tq = Math.floor(t * 10) / 10;
+  const bright = Math.sin(TAU * tq * 2.5) + 0.5 * Math.sin(TAU * tq * 6.125) > 0.2;
+  if (bright) rect(44, 114, 6, 5, C.amberPale); else rect(45, 115, 4, 3, C.amberPale);
+  rect(47, 117, 1, 3, C.beard);
+  px(47, 115, C.amberDeep);
+  if (bright) px(47, 114, C.amberDeep);
+}
+
+function drawLantern(dim) {
+  hline(109, 111, 104, C.black);
+  hline(108, 112, 105, C.black);
+  rect(107, 106, 7, 8, C.black);
+  rect(108, 107, 5, 6, dim ? C.amberDeep : C.amber);
+  rect(109, 108, 3, 4, dim ? C.amber : C.amberPale);
+  hline(108, 112, 114, C.black);
+  px(110, 115, C.black);
+}
+
+// Puddle glints and ripples
+const RIPPLES = [
+  [240, 168, 0.0, 0, 1.6, 6], [252, 166, 0.31, 0, 1.6, 6], [246, 168, 0.58, 0, 1.6, 6],
+  [233, 169, 0.77, 0, 1.6, 5], [259, 165, 0.15, 0, 1.6, 5],
+  [111, 160, 0.4, 1, 2, 4], [106, 161, 0.9, 1, 2, 3]
+];
+function drawPuddles(t, dim) {
+  const sh = Math.round(Math.sin(TAU * t / 2));
+  hline(254 + sh, 257 + sh, 166, C.cloudLit);
+  px(255 + sh, 166, C.beard);
+  hline(256 - sh, 257 - sh, 168, C.cloudLit);
+  hline(236 - sh, 239 - sh, 168, C.cyanDeep);
+  px(237 - sh, 169, C.cyanDeep);
+  hline(109, 111, 160, dim ? C.amberDeep : C.amber);
+  if (!dim) px(110, 160, C.amberPale);
+
+  for (const [cx, cy, ph, id, per, maxR] of RIPPLES) {
+    const a = ((t / per) + ph) % 1;
+    const r = 1 + Math.floor(a * maxR);
+    const ry = Math.max(1, Math.round(r / 3));
+    const col = a < 0.45 ? C.rain : a < 0.8 ? C.cloudLit : C.cloud;
+    const steps = 8 + r * 6;
+    for (let s = 0; s < steps; s++) {
+      const ang = s / steps * TAU;
+      const x = cx + Math.round(r * Math.cos(ang)), y = cy + Math.round(ry * Math.sin(ang));
+      if (inPuddle(x, y, id)) px(x, y, col);
+    }
+    if (a < 0.1) { px(cx, cy - 1, C.rain); px(cx, cy - 2, C.rain); }
+  }
+}
+
+function tailPose(t) {
+  const wins = [[1.0, 2.2], [5.0, 6.4]];
+  const seq = ['C', 'A', 'B', 'A', 'B', 'C'];
+  for (const [s, e] of wins) {
+    if (t >= s && t < e) return TAIL[seq[Math.min(seq.length - 1, Math.floor((t - s) / (e - s) * seq.length))]];
+  }
+  if (t >= 3.6 && t < 3.9) return TAIL.D;
+  return TAIL.rest;
+}
+function drawCat(t) {
+  hline(CAT_X + 2, CAT_X + 12, CAT_Y + 12, C.grassDark); // contact shadow
+  const blink = (t >= 3.0 && t < 3.15) || (t >= 7.2 && t < 7.35);
+  sprite(CAT, CAT_X, CAT_Y, { '1': C.black, e: blink ? C.black : C.firefly, r: C.woodDark });
+  const bx = CAT_X + 4, by = CAT_Y + 11;
+  const pose = tailPose(t);
+  for (let i = 0; i < pose.length; i++) {
+    const [dx, dy] = pose[i];
+    px(bx + dx, by + dy, C.black);
+    if (i < 3) {
+      const nx = pose[i + 1][0] - dx, ny = pose[i + 1][1] - dy;
+      if (Math.abs(ny) >= Math.abs(nx)) px(bx + dx - 1, by + dy, C.black);
+      else px(bx + dx, by + dy - 1, C.black);
+    }
+  }
+}
+
+const FLAMES = [[4, 6, 3, 5, 4], [5, 4, 5, 3, 6], [3, 5, 4, 6, 3], [6, 3, 6, 4, 5]];
+function flame(x, base, h) {
+  for (let k = 0; k < h; k++) {
+    const y = base - k;
+    if (k === h - 1) px(x, y, C.amberDeep);
+    else if (k >= h - 2) px(x, y, C.amber);
+    else rect(x, y, 2, 1, C.amber);
+  }
+  px(x, base, C.amberPale);
+  if (h > 3) px(x, base - 1, C.amberPale);
+}
+
+function drawCauldronAndWizard(t, big) {
+  const c = CAULDRON_X;
+  const theta = TAU * t / 2; // stir: 4 turns per loop
+
+  // Shadows
+  hline(WIZ_X + 1, WIZ_X + 15, WIZ_Y + 28, C.grassDark);
+  hline(c - 12, c + 12, 161, C.grassDark);
+
+  // Fire
+  rect(c - 9, 159, 18, 2, C.woodDark);
+  hline(c - 7, c + 6, 159, C.wood);
+  const fr = Math.floor(t * 8) % 4;
+  [-11, -7, -1, 5, 10].forEach((o, i) => flame(c + o, 159, FLAMES[fr][i]));
+  rect(c - 6, 160, 12, 1, C.wood);
+
+  // Cauldron body
+  rect(c - 10, 155, 2, 5, C.black);
+  rect(c + 9, 155, 2, 5, C.black);
+  const BW = [11, 12, 12, 12, 12, 11, 11, 10, 9, 7, 5];
+  for (let k = 0; k < BW.length; k++) hline(c - BW[k], c + BW[k], 147 + k, C.black);
+  for (let k = 0; k < 9; k++) px(c + BW[k], 147 + k, C.stoneDark);
+  for (let k = 1; k < 6; k++) px(c + BW[k] - 1, 147 + k, C.stoneDark);
+  rect(c + 6, 148, 3, 1, C.stone); px(c + 8, 149, C.stone);
+  hline(c - 4, c + 4, 157, C.woodDark);
+  // Rim and liquid
+  hline(c - 11, c + 11, 145, C.stone);
+  hline(c - 11, c + 11, 146, C.stoneDark);
+  hline(c - 8, c + 8, 142, C.stoneDark);
+  hline(c - 6, c + 6, 142, C.cyanDeep);
+  hline(c - 10, c + 10, 143, C.stoneDark);
+  hline(c - 8, c + 8, 143, C.cyan);
+  hline(c - 11, c + 11, 144, C.stoneDark);
+  hline(c - 9, c + 9, 144, C.cyan);
+  if (big) hline(c - 3, c + 3, 143, C.cyanPale);
+
+  // Swirl highlights follow the ladle
+  const sx = Math.round(6 * Math.cos(theta)), sy = Math.sin(theta) > 0 ? 144 : 143;
+  hline(c + sx - 1, c + sx, sy, C.cyanPale);
+  const tx = Math.round(6 * Math.cos(theta - 0.9));
+  px(c + tx, Math.sin(theta - 0.9) > 0 ? 144 : 143, C.cyanDeep);
+  const ox = Math.round(6 * Math.cos(theta + Math.PI));
+  px(c + ox, Math.sin(theta + Math.PI) > 0 ? 144 : 143, C.cyanPale);
+
+  // Bubbles (1 s period)
+  for (const [bx, ph] of [[c - 5, 0], [c + 3, 0.37], [c + 7, 0.71]]) {
+    const a = ((t / 1) + ph) % 1;
+    if (a >= 0.5 && a < 0.8) { px(bx, 142, C.cyanPale); px(bx - 1, 143, C.cyanPale); px(bx + 1, 143, C.cyanPale); }
+    else if (a >= 0.8 && a < 0.9) { px(bx - 2, 140, C.cyanPale); px(bx + 2, 139, C.cyanPale); }
+  }
+
+  // Wizard
+  const blink = (t >= 2.5 && t < 2.62) || (t >= 6.1 && t < 6.22);
+  const sway = Math.sin(TAU * t / 1) > 0.3 ? 1 : 0; // hat tip sway, 1 s period
+  sprite(WIZ.slice(0, 3), WIZ_X + sway, WIZ_Y, WIZ_MAP);
+  sprite(WIZ.slice(3), WIZ_X, WIZ_Y + 3, WIZ_MAP);
+  if (blink) px(WIZ_X + 10, WIZ_Y + 11, C.skin);
+  for (const [i, j] of WIZ_RIM) px(WIZ_X + i, WIZ_Y + j, big ? C.cyan : C.cyanDeep);
+
+  // Stirring arm and ladle
+  const hx = 194 + Math.round(3 * Math.cos(theta));
+  const hy = 141 + Math.round(Math.sin(theta));
+  const shX = WIZ_X + 12, shY = WIZ_Y + 15;
+  line(hx - 1, hy - 4, hx + 6, 144, C.woodLight);
+  line(shX, shY + 1, hx, hy + 1, C.robeDark, 2);
+  line(shX, shY, hx, hy, C.robe, 2);
+  rect(hx - 2, hy, 2, 2, C.robeDark);
+  rect(hx, hy, 2, 2, C.skin);
+}
+
+const FIREFLIES = [
+  { x: 150, y: 124, ax: 9, ay: 5, a: 1, b: 2, p: 0.0, q: 1.0, c: 3, r: 0.0 },
+  { x: 236, y: 128, ax: 12, ay: 6, a: 2, b: 3, p: 1.2, q: 0.3, c: 2, r: 1.1 },
+  { x: 280, y: 150, ax: 7, ay: 7, a: 1, b: 1, p: 2.0, q: 0.4, c: 4, r: 2.3 },
+  { x: 28, y: 132, ax: 8, ay: 9, a: 1, b: 2, p: 0.7, q: 2.2, c: 3, r: 3.5 },
+  { x: 166, y: 104, ax: 11, ay: 4, a: 3, b: 2, p: 1.9, q: 0.9, c: 5, r: 0.6 },
+  { x: 302, y: 112, ax: 6, ay: 8, a: 2, b: 1, p: 0.2, q: 1.7, c: 2, r: 4.2 },
+  { x: 70, y: 166, ax: 10, ay: 3, a: 1, b: 3, p: 2.6, q: 0.1, c: 3, r: 5.1 }
+];
+function drawFireflies(t) {
+  for (const f of FIREFLIES) {
+    const x = f.x + Math.round(f.ax * Math.sin(TAU * f.a * t / LOOP + f.p));
+    const y = f.y + Math.round(f.ay * Math.sin(TAU * f.b * t / LOOP + f.q));
+    const g = Math.sin(TAU * f.c * t / LOOP + f.r);
+    if (g > 0.5) {
+      px(x - 1, y, C.grassLit); px(x + 1, y, C.grassLit);
+      px(x, y - 1, C.grassLit); px(x, y + 1, C.grassLit);
+      px(x, y, C.firefly);
+    } else if (g > -0.2) {
+      px(x, y, C.grassLit);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Setup
+// ---------------------------------------------------------------------------
+const [baseCanvas, baseCtx] = makeLayer();
+ctx = baseCtx; drawBackground();
+const bgVariants = [];
+for (const big of [false, true]) for (const dim of [false, true]) {
+  bgVariants[(dim ? 1 : 0) + (big ? 2 : 0)] = bakeLit(baseCanvas, lightsFor(dim, big));
+}
+const [fgCanvas, fgCtx] = makeLayer();
+ctx = fgCtx; drawForeground();
+
+const [buf, bctx] = makeLayer();
+const screen = document.getElementById('screen');
+const sctx = screen.getContext('2d');
+
+function resize() {
+  const dpr = window.devicePixelRatio || 1;
+  const s = Math.max(1, Math.floor(Math.min(innerWidth * dpr / W, innerHeight * dpr / H)));
+  screen.width = W * s; screen.height = H * s;
+  screen.style.width = (W * s / dpr) + 'px';
+  screen.style.height = (H * s / dpr) + 'px';
+  sctx.imageSmoothingEnabled = false;
+}
+addEventListener('resize', resize);
+resize();
+
+let start = null;
+function frame(now) {
+  if (start === null) start = now;
+  const t = ((now - start) / 1000) % LOOP;
+
+  // Lantern flicker: frequencies are multiples of 1/8 Hz, sampled at 12 fps
+  const tq = Math.floor(t * 12) / 12;
+  const fl = Math.sin(TAU * tq * 3) + 0.6 * Math.sin(TAU * tq * 7.25 + 1) + 0.5 * Math.sin(TAU * tq * 1.625 + 2);
+  const dim = fl > 1.1;
+  const big = Math.sin(TAU * t / 4) > 0;
+
+  ctx = bctx;
+  ctx.drawImage(bgVariants[(dim ? 1 : 0) + (big ? 2 : 0)], 0, 0);
+  drawRain(farRain, t, C.cloudLit, false);
+  drawSmoke(t);
+  drawWindow(t);
+  drawLantern(dim);
+  drawPuddles(t, dim);
+  drawCat(t);
+  drawCauldronAndWizard(t, big);
+  drawSteam(t);
+  ctx.drawImage(fgCanvas, 0, 0);
+  drawFireflies(t);
+  drawRain(nearRain, t, C.rain, true);
+  drawDrips(t);
+
+  sctx.imageSmoothingEnabled = false;
+  sctx.drawImage(buf, 0, 0, screen.width, screen.height);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

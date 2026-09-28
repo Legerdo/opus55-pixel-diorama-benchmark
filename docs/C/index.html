@@ -1,0 +1,700 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Rainy Night — Wizard's Forest Cabin</title>
+<style>
+  html,body{margin:0;height:100%;background:#040509;overflow:hidden}
+  body{display:flex;align-items:center;justify-content:center}
+  canvas{display:block;image-rendering:pixelated;image-rendering:crisp-edges}
+</style>
+</head>
+<body>
+<canvas id="view" role="img" aria-label="Animated pixel-art diorama: on a rainy night in the forest, a small wizard stirs a glowing cyan cauldron beside a wooden cabin, while a black cat sits under a warm amber lantern."></canvas>
+<script>
+'use strict';
+// ---------------------------------------------------------------------------
+// Logical frame: 320x180, 8 s loop = 192 frames @ 24 fps. Every animation is
+// a pure function of the frame index f (0..191), and every period divides 192,
+// so the loop is seamless.
+// ---------------------------------------------------------------------------
+const W = 320, H = 180, N = W * H, F = 192, LOOP_MS = 8000;
+
+// 32-colour core palette (indexed rendering keeps the palette strict).
+const PALETTE = [
+  '#080b16', '#0e1524', '#182236', '#131c2c', // 0-3  sky top, sky mid, horizon haze, far treeline
+  '#0e151f', '#070d0c', '#10201c', '#1f3f38', // 4-7  mid trees, fg foliage dark / mid / light
+  '#14171e', '#20242c', '#24171a', '#432a22', // 8-11 ground dark, clearing, wood dark, wood mid
+  '#6c4228', '#1e1824', '#33283a', '#353a46', // 12-15 wood light, roof dark, roof mid, stone
+  '#535866', '#6e3412', '#c46a1e', '#ffb445', // 16-19 stone light, amber dark / mid / bright
+  '#ffe08a', '#0b3a46', '#15909a', '#4fe6dc', // 20-23 amber core, cyan dark / mid / bright
+  '#dcfff8', '#261f4a', '#41367e', '#c48c6c', // 24-27 cyan core, robe dark / mid, skin
+  '#aeb2c2', '#030406', '#2c4058', '#5d7a96'  // 28-31 beard, black, rain, rain light
+];
+const PR = new Uint8Array(96);
+PALETTE.forEach((h, i) => {
+  PR[i * 3] = parseInt(h.slice(1, 3), 16);
+  PR[i * 3 + 1] = parseInt(h.slice(3, 5), 16);
+  PR[i * 3 + 2] = parseInt(h.slice(5, 7), 16);
+});
+
+// Indexed frame buffer + "receives light" mask.
+const buf = new Uint8Array(N), rv = new Uint8Array(N);
+let R = 0; // current receive-light flag used by px()
+
+function px(x, y, c) {
+  x |= 0; y |= 0;
+  if (x < 0 || y < 0 || x >= W || y >= H) return;
+  const i = y * W + x; buf[i] = c; rv[i] = R;
+}
+
+function hline(x0, x1, y, c) { for (let x = x0; x <= x1; x++) px(x, y, c); }
+function vline(x, y0, y1, c) { for (let y = y0; y <= y1; y++) px(x, y, c); }
+function rect(x, y, w, h, c) { for (let j = 0; j < h; j++) hline(x, x + w - 1, y + j, c); }
+function lineCb(x0, y0, x1, y1, cb) { // Bresenham, integer only
+  const dx = Math.abs(x1 - x0), dy = -Math.abs(y1 - y0);
+  const sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
+  let e = dx + dy;
+  for (;;) {
+    cb(x0, y0);
+    if (x0 === x1 && y0 === y1) break;
+    const e2 = 2 * e;
+    if (e2 >= dy) { e += dy; x0 += sx; }
+    if (e2 <= dx) { e += dx; y0 += sy; }
+  }
+}
+function line(x0, y0, x1, y1, c) { lineCb(x0, y0, x1, y1, (x, y) => px(x, y, c)); }
+function ellipseRows(cx, cy, rx, ry, cb) {
+  for (let dy = -ry; dy <= ry; dy++) {
+    const k = dy / (ry + 0.5);
+    const hw = Math.round(rx * Math.sqrt(Math.max(0, 1 - k * k)));
+    cb(cy + dy, cx - hw, cx + hw, hw);
+  }
+}
+function fillEllipse(cx, cy, rx, ry, c) { ellipseRows(cx, cy, rx, ry, (y, a, b) => hline(a, b, y, c)); }
+const discR = r => (r <= 1 ? r : r * r + r); // crisp pixel circles
+function disc(cx, cy, r, c) {
+  const rr = discR(r);
+  for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++)
+    if (dx * dx + dy * dy <= rr) px(cx + dx, cy + dy, c);
+}
+// Disc with an offset inner highlight disc -> shaded cluster, not a flat blob.
+function shadedDisc(cx, cy, r, base, hi, hx, hy) {
+  const rr = discR(r), ri = discR(r - 1);
+  for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+    if (dx * dx + dy * dy > rr) continue;
+    const ix = dx - hx, iy = dy - hy;
+    px(cx + dx, cy + dy, (hi != null && r > 1 && ix * ix + iy * iy <= ri) ? hi : base);
+  }
+}
+function sprite(rows, map, x, y) {
+  for (let j = 0; j < rows.length; j++) {
+    const row = rows[j];
+    for (let i = 0; i < row.length; i++) {
+      const ch = row[i];
+      if (ch !== '.') px(x + i, y + j, map[ch]);
+    }
+  }
+}
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+
+
+// Static layers are rendered once; 255 = transparent.
+function makeLayer(fill, drawFn) {
+  buf.fill(fill); rv.fill(0); R = 0; drawFn();
+  return { c: buf.slice(), r: rv.slice() };
+}
+function composite(L) {
+  const c = L.c, r = L.r;
+  for (let i = 0; i < N; i++) { const v = c[i]; if (v !== 255) { buf[i] = v; rv[i] = r[i]; } }
+}
+
+// ---------------------------------------------------------------------------
+// Lighting: two separate sources, each maps a receiving colour up a
+// hand-picked ramp (levels 0..3). No blending, so the palette stays exact.
+// ---------------------------------------------------------------------------
+const AMBER = new Uint8Array(128), CYAN = new Uint8Array(128);
+for (let c = 0; c < 32; c++) for (let l = 0; l < 4; l++) { AMBER[c * 4 + l] = c; CYAN[c * 4 + l] = c; }
+function ramp(T, c, arr) { for (let l = 0; l < 4; l++) T[c * 4 + l] = arr[l]; }
+// warm lantern light
+ramp(AMBER, 5, [5, 5, 10, 10]);   ramp(AMBER, 6, [6, 6, 10, 11]);
+ramp(AMBER, 8, [8, 10, 10, 11]);  ramp(AMBER, 9, [9, 10, 11, 11]);
+ramp(AMBER, 10, [10, 10, 11, 11]); ramp(AMBER, 11, [11, 11, 12, 12]);
+ramp(AMBER, 13, [13, 13, 14, 14]); ramp(AMBER, 14, [14, 14, 11, 11]);
+ramp(AMBER, 15, [15, 15, 16, 16]); ramp(AMBER, 30, [30, 17, 18, 18]);
+ramp(AMBER, 31, [31, 18, 19, 19]);
+// cyan cauldron light
+ramp(CYAN, 5, [5, 6, 6, 7]);      ramp(CYAN, 6, [6, 7, 7, 7]);
+ramp(CYAN, 7, [7, 7, 22, 22]);    ramp(CYAN, 8, [8, 9, 21, 21]);
+ramp(CYAN, 9, [9, 21, 21, 22]);   ramp(CYAN, 10, [10, 10, 21, 21]);
+ramp(CYAN, 15, [15, 15, 16, 16]); ramp(CYAN, 30, [30, 21, 22, 23]);
+ramp(CYAN, 31, [31, 22, 23, 23]);
+
+const LANTERN = { x: 110, y: 113 }, CAUL = { x: 204, y: 145 };
+const FLICK = [0, 0, 1, 0, -1, 0, 0, 1, 1, 0, 0, -1, 0, 1, 0, 0]; // 64-frame cycle
+const PULSE = [0, 1, 2, 1];                                          // 48-frame cycle
+const flickAt = f => FLICK[(f >> 2) % 16];
+const pulseAt = f => PULSE[Math.floor(f / 12) % 4];
+
+function lightPass(f) {
+  const aR = 34 + flickAt(f), aR2 = aR * aR;
+  const cR = 40 + pulseAt(f) * 2, cR2 = cR * cR;
+  const lvl = t => (t < 0.2 ? 3 : t < 0.5 ? 2 : t < 1 ? 1 : 0);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const i = y * W + x;
+    if (!rv[i]) continue;
+    const dxA = x - LANTERN.x, dyA = (y - LANTERN.y) * 1.15;
+    const dxC = x - CAUL.x, dyC = (y - CAUL.y) * 1.7;
+    const tA = (dxA * dxA + dyA * dyA) / aR2, tC = (dxC * dxC + dyC * dyC) / cR2;
+    const la = lvl(tA);
+    let lc = lvl(tC);
+    // the cauldron body blocks its own light on the ground in front of it
+    if (lc && y > 156 && Math.abs(dxC) < 11 + (y - 156) * 0.6) lc = Math.max(0, lc - 2);
+    if (!la && !lc) continue;
+    const c = buf[i];
+    buf[i] = (lc > la || (lc === la && tC <= tA)) ? CYAN[c * 4 + lc] : AMBER[c * 4 + la];
+  }
+}
+
+
+// ---------------------------------------------------------------------------
+// BACKGROUND: sky bands, far treeline, mid trees. Low contrast, low detail.
+// ---------------------------------------------------------------------------
+function conifer(cx, base, h, c, spread) {
+  for (let r = 0; r < h; r++) {
+    let hw = Math.floor(r * spread);
+    if (r > 4 && r % 7 < 2) hw -= Math.max(1, Math.floor(r * spread * 0.3)); // branch tiers
+    hline(cx - Math.max(0, hw), cx + Math.max(0, hw), base - h + r, c);
+  }
+}
+const groundTop = x => 126 + Math.round(1.5 * Math.sin(x / 19) + Math.sin(x / 7 + 2));
+
+const BG = makeLayer(0, () => {
+  for (let x = 0; x < W; x++) {
+    const b1 = 42 + Math.round(3 * Math.sin(x / 21) + 2 * Math.sin(x / 9.3 + 1));
+    const b2 = 82 + Math.round(4 * Math.sin(x / 33 + 2) + 2 * Math.sin(x / 13));
+    for (let y = 0; y < H; y++) px(x, y, y < b1 ? 0 : y < b2 ? 1 : 2);
+  }
+  // flat rain-cloud masses
+  fillEllipse(70, 28, 42, 4, 1); fillEllipse(236, 20, 52, 5, 1); fillEllipse(160, 10, 30, 2, 1);
+  fillEllipse(118, 66, 46, 4, 2); fillEllipse(284, 60, 38, 3, 2);
+  // far treeline (hazy, merges into one mass)
+  const rnd = mulberry32(7);
+  for (let x = -8; x < W + 8;) {
+    conifer(x, 122, 24 + Math.floor(rnd() * 22), 3, 0.38);
+    x += 7 + Math.floor(rnd() * 8);
+  }
+  rect(0, 112, W, 20, 3);
+  // mid trees (darker, fewer, larger)
+  [[2, 96], [150, 80], [178, 58], [224, 102], [262, 74], [302, 108]]
+    .forEach(([x, h]) => conifer(x, 134, h, 4, 0.3));
+});
+
+
+// ---------------------------------------------------------------------------
+// MIDGROUND: ground, cabin, barrel, puddle bed, small bushes.
+// ---------------------------------------------------------------------------
+const PUD = new Map(), LIQ = new Map();
+ellipseRows(160, 163, 17, 3, (y, a, b) => PUD.set(y, [a, b]));
+ellipseRows(204, 145, 8, 1, (y, a, b) => LIQ.set(y, [a, b]));
+const inMask = (M, x, y) => { const r = M.get(y); return !!r && x >= r[0] && x <= r[1]; };
+
+function tuft(x, y, c) { line(x, y, x - 1, y - 3, c); line(x + 1, y, x + 1, y - 4, c); line(x + 2, y, x + 3, y - 2, c); }
+
+function drawGround(rng) {
+  for (let x = 0; x < W; x++) {
+    for (let y = groundTop(x); y < H; y++) {
+      const ex = (x - 165) / 128, ey = (y - 154) / 22;
+      px(x, y, ex * ex + ey * ey < 1 + 0.08 * Math.sin(x * 0.21) ? 9 : 8);
+    }
+  }
+  for (let x = 4; x < W; x += 9 + Math.floor(rng() * 7)) tuft(x, groundTop(x) + 1, 6);
+  // a few stones in the clearing
+  [[138, 146], [182, 160], [246, 152], [128, 170]].forEach(([x, y]) => {
+    hline(x, x + 2, y, 15); px(x + 1, y - 1, 15); px(x, y - 1, 16);
+  });
+  // small bushes along the treeline
+  shadedDisc(16, 133, 6, 4, 6, 1, -1);
+  shadedDisc(148, 131, 5, 4, 6, -1, -1);
+  shadedDisc(242, 139, 6, 6, 7, -1, -1);
+  shadedDisc(252, 136, 4, 6, 7, -1, -1);
+  shadedDisc(266, 134, 5, 4, 6, -1, -1);
+}
+
+function drawRoofAndChimney(rng) {
+  for (let y = 80; y <= 103; y++) {
+    const t = (y - 80) / 23, row = y - 80;
+    const xl = Math.round(36 - t * 18), xr = Math.round(92 + t * 18);
+    hline(xl, xr, y, row % 4 === 3 ? 13 : 14);
+    px(xl, y, 13); px(xr, y, 13);
+    if (row % 4 === 1) for (let x = xl + 2; x < xr - 1; x++)
+      if ((x + (row >> 2) * 4) % 9 === 0) { px(x, y, 13); px(x, y + 1, 13); }
+  }
+  hline(37, 91, 80, 15);
+  for (let k = 0; k < 7; k++) { // wet sheen dashes on shingle rows
+    const row = 4 + 4 * Math.floor(rng() * 5), y = 80 + row;
+    const x = 30 + Math.floor(rng() * 70);
+    hline(x, x + 2, y, 15);
+  }
+  // stone chimney
+  rect(44, 66, 9, 16, 15);
+  vline(52, 66, 81, 13); vline(44, 66, 76, 16);
+  [70, 74, 78].forEach((y, k) => { hline(44, 52, y, 13); vline(47 + (k % 2) * 3, y + 1, y + 3, 13); });
+  vline(49, 67, 69, 13);
+  hline(43, 53, 64, 16); hline(43, 53, 65, 15);
+}
+
+
+function drawCabinBody(rng) {
+  // log wall
+  for (let k = 0; k < 7; k++) {
+    const y = 104 + k * 4;
+    hline(24, 103, y, 11); hline(24, 103, y + 1, 11); hline(24, 103, y + 2, 11); hline(24, 103, y + 3, 10);
+    [21, 104].forEach(x => { // round log ends
+      px(x, y, 11); px(x + 1, y, 11); px(x + 2, y, 10);
+      px(x, y + 1, 11); px(x + 1, y + 1, 12); px(x + 2, y + 1, 10);
+      hline(x, x + 2, y + 2, 10); hline(x, x + 2, y + 3, 10);
+    });
+    for (let n = 0; n < 2; n++) { const x = 28 + Math.floor(rng() * 70); hline(x, x + 1 + Math.floor(rng() * 2), y + 2, 10); }
+  }
+  hline(24, 103, 104, 10); hline(24, 103, 105, 10); // eave shadow
+  // stone foundation
+  rect(22, 132, 84, 4, 15); hline(22, 105, 132, 16); hline(22, 105, 135, 13);
+  for (let x = 25; x < 105; x += 7) vline(x + ((x >> 3) % 2), 133, 134, 13);
+  // window with warm interior
+  rect(35, 109, 17, 14, 10);
+  R = 0; rect(37, 111, 13, 10, 17); rect(38, 118, 3, 3, 18); px(39, 117, 18); R = 1;
+  vline(43, 111, 120, 10); hline(37, 49, 115, 10);
+  hline(34, 52, 122, 12); hline(35, 51, 123, 10);
+  // door
+  hline(74, 90, 110, 10); hline(74, 90, 111, 11);
+  rect(75, 112, 15, 20, 29); rect(76, 112, 13, 19, 10);
+  vline(80, 112, 130, 13); vline(84, 112, 130, 13);
+  hline(76, 88, 117, 11); hline(76, 88, 125, 11);
+  px(86, 121, 17); px(86, 122, 17);
+  R = 0; hline(77, 87, 131, 17); R = 1; // warm light leaking under the door
+}
+
+function drawBarrelAndBracket() {
+  for (let y = 126; y <= 135; y++) {
+    const b = (y >= 128 && y <= 133) ? 1 : 0;
+    hline(111 - b, 121 + b, y, 11);
+  }
+  hline(111, 121, 125, 10); hline(111, 121, 136, 10);
+  [114, 117, 120].forEach(x => vline(x, 126, 135, 10));
+  vline(112, 129, 132, 12);
+  hline(110, 122, 128, 15); hline(110, 122, 133, 15); px(110, 128, 16); px(110, 133, 16);
+  // lantern bracket on the cabin corner
+  hline(104, 111, 107, 29); px(110, 108, 29); px(105, 108, 29);
+}
+
+const MG = makeLayer(255, () => {
+  const rng = mulberry32(21);
+  R = 1;
+  drawGround(rng);
+  drawRoofAndChimney(rng);
+  drawCabinBody(rng);
+  drawBarrelAndBracket();
+  // puddle bed: dark sky reflection with a darker near bank
+  R = 0;
+  fillEllipse(160, 163, 17, 3, 1);
+  const top = PUD.get(160); hline(top[0] + 2, top[1] - 2, 159, 8);
+  hline(150, 158, 162, 2); hline(163, 166, 164, 2);
+});
+
+
+// ---------------------------------------------------------------------------
+// FOREGROUND: dark framing foliage. Right bush gets a cyan rim facing the
+// cauldron; everything else is near-silhouette.
+// ---------------------------------------------------------------------------
+function leafClump(rng, cx, cy, r, base, hi, hx, hy, rim) {
+  shadedDisc(cx, cy, r, base, hi, hx, hy);
+  if (rim != null) {
+    const rr = discR(r), sx = Math.sign(hx), sy = Math.sign(hy);
+    for (let dy = -r; dy <= 0; dy++) for (let dx = -r; dx <= r; dx++) {
+      if (dx * dx + dy * dy > rr) continue;
+      const ox = dx + sx, oy = dy + sy;
+      if (ox * ox + oy * oy > rr) px(cx + dx, cy + dy, rim);
+    }
+  }
+  for (let m = 0; m < r; m++) { // leaf tips break the round silhouette
+    const a = rng() * Math.PI * 2, len = 1 + Math.floor(rng() * 2);
+    for (let k = 1; k <= len; k++) px(cx + Math.round((r + k) * Math.cos(a)), cy + Math.round((r + k) * Math.sin(a)), base);
+  }
+}
+function frond(x, y, len, dir, c, leaf) {
+  let x0 = x, y0 = y;
+  for (let s = 1; s <= len; s++) {
+    const t = s / len;
+    const nx = x + Math.round(dir * (s * 0.35 + t * t * len * 0.55));
+    const ny = y - Math.round(s - t * t * len * 0.45);
+    line(x0, y0, nx, ny, c);
+    if (s % 2 === 0 && s < len - 1) {
+      const l = Math.max(1, Math.round((1 - t) * 3.2));
+      for (let k = 1; k <= l; k++) { px(nx - k, ny + (k >> 1), leaf); px(nx + k, ny + (k >> 1), leaf); }
+    }
+    x0 = nx; y0 = ny;
+  }
+}
+
+const FG = makeLayer(255, () => {
+  const rng = mulberry32(5);
+  R = 1;
+  // top-left overhanging branch
+  line(-1, 2, 62, 11, 5); line(-1, 3, 50, 10, 5); line(28, 6, 38, 0, 5);
+  [[2, 6, 5], [10, 10, 4], [18, 12, 5], [27, 12, 4], [36, 14, 4], [45, 13, 3], [53, 15, 3], [61, 13, 2]]
+    .forEach(([x, y, r]) => leafClump(rng, x, y, r, 5, 6, 1, 1));
+  // top-right overhanging branch
+  line(321, 1, 266, 8, 5); line(321, 2, 278, 8, 5);
+  [[318, 4, 6], [308, 9, 5], [298, 11, 4], [288, 11, 4], [279, 12, 3], [270, 10, 2]]
+    .forEach(([x, y, r]) => leafClump(rng, x, y, r, 5, 6, -1, 1));
+  // bottom-left bush + ferns
+  frond(8, 172, 26, 1, 5, 6); frond(30, 176, 18, 1, 5, 5);
+  [[-6, 152, 9], [-2, 166, 12], [12, 161, 9], [24, 171, 10], [4, 178, 10], [38, 177, 7], [50, 180, 5]]
+    .forEach(([x, y, r]) => leafClump(rng, x, y, r, 5, 6, 1, -1));
+  // bottom-right bush + ferns (cyan rim toward the cauldron)
+  frond(312, 162, 22, -1, 5, 6); frond(300, 174, 24, -1, 5, 6); frond(286, 179, 16, -1, 5, 5);
+  [[324, 146, 13], [306, 158, 11], [318, 170, 12], [290, 170, 9], [277, 178, 7], [300, 179, 9]]
+    .forEach(([x, y, r]) => leafClump(rng, x, y, r, 5, 6, -1, -1, 7));
+  // grass edge
+  hline(0, W - 1, 179, 5);
+  for (let x = 0; x < W;) {
+    const side = Math.min(x, W - x), h = 2 + Math.floor(rng() * (side < 70 ? 6 : 2));
+    line(x, 179, x + (rng() < 0.5 ? -1 : 1) * (h > 4 ? 1 : 0), 179 - h, 5);
+    x += 2 + Math.floor(rng() * 3);
+  }
+});
+
+
+// ---------------------------------------------------------------------------
+// Dynamic element data (seeded, deterministic)
+// ---------------------------------------------------------------------------
+const rs = mulberry32(99);
+const FAR_RAIN = Array.from({ length: 80 }, () => ({ x: Math.floor(rs() * 360), y: Math.floor(rs() * 192) }));
+const NEAR_RAIN = Array.from({ length: 110 }, () => {
+  const v = rs() < 0.3 ? 8 : 6;
+  return { x: Math.floor(rs() * 368), y: Math.floor(rs() * 192), v, len: v === 8 ? 5 : 4, hi: rs() < 0.15 };
+});
+const SPLASH = [];
+for (let tries = 0; SPLASH.length < 34 && tries < 2000; tries++) {
+  const x = Math.floor(rs() * W), y = 130 + Math.floor(rs() * 44), c = MG.c[y * W + x];
+  if ((c === 8 || c === 9) && !inMask(PUD, x, y) && !inMask(PUD, x, y + 1)) SPLASH.push({ x, y, ph: Math.floor(rs() * 24) });
+}
+const RIPPLE = Array.from({ length: 32 }, () => ({ x: 148 + Math.floor(rs() * 25), y: 162 + Math.floor(rs() * 3) }));
+const FIREFLIES = [
+  { cx: 52, cy: 140, ax: 8, ay: 5, k1: 1, k2: 2, p: 0.0, off: 0 },
+  { cx: 148, cy: 118, ax: 10, ay: 6, k1: 2, k2: 1, p: 1.3, off: 21 },
+  { cx: 264, cy: 116, ax: 9, ay: 7, k1: 1, k2: 3, p: 2.1, off: 40 },
+  { cx: 290, cy: 134, ax: 7, ay: 5, k1: 2, k2: 3, p: 0.7, off: 12 },
+  { cx: 24, cy: 112, ax: 6, ay: 8, k1: 1, k2: 1, p: 4.0, off: 52 }
+];
+const TAU = Math.PI * 2;
+
+// ---------------------------------------------------------------------------
+// Rain, smoke, splashes, puddle
+// ---------------------------------------------------------------------------
+function drawFarRain(f) {
+  for (const d of FAR_RAIN) {
+    const yy = (d.y + f * 3) % 192, x = d.x - Math.floor(yy / 6);
+    px(x, yy - 6, 2); px(x, yy - 5, 2);
+  }
+}
+function drawNearRain(f) {
+  for (const d of NEAR_RAIN) {
+    const yy = (d.y + f * d.v) % 192;
+    for (let k = 0; k < d.len; k++) {
+      const t = yy + k;
+      px(d.x - (t >> 2), t - 8, (d.hi && k === d.len - 1) ? 31 : 30);
+    }
+  }
+}
+function drawSmoke(f) {
+  const puffs = [];
+  for (let i = 0; i < 8; i++) puffs.push({ i, a: (f + i * 12) % 96 });
+  puffs.sort((p, q) => q.a - p.a); // oldest first, fresh puffs on top
+  for (const { i, a } of puffs) {
+    const y = 63 - Math.floor(a * 0.42);
+    const x = 48 - Math.floor(a * 0.28) + Math.round(1.5 * Math.sin(TAU * a / 48 + i * 1.3));
+    const r = a < 10 ? 2 : a < 30 ? 3 : a < 60 ? 4 : 5;
+    if (a < 30) shadedDisc(x, y, r, 15, 16, -1, -1);
+    else if (a < 55) disc(x, y, r, 15);
+    else if (a < 76) shadedDisc(x, y, r, 2, 15, -1, -1);
+    else disc(x, y, r - 1, 1);
+  }
+}
+
+function drawSplashes(f) {
+  for (const s of SPLASH) {
+    const a = (f + s.ph) % 24;
+    if (a === 0) px(s.x, s.y - 1, 31);
+    else if (a === 1) { px(s.x - 1, s.y - 1, 30); px(s.x + 1, s.y - 1, 30); px(s.x, s.y - 2, 31); }
+    else if (a === 2) { px(s.x - 2, s.y, 30); px(s.x + 2, s.y, 30); }
+  }
+}
+function pudPx(x, y, c) { if (inMask(PUD, x, y)) px(x, y, c); }
+function drawPuddle(f) {
+  R = 0;
+  const s = [0, 1, 0, -1][Math.floor(f / 8) % 4]; // shimmer
+  // cyan glow reflection (right, toward cauldron) and faint amber (left, toward lantern)
+  for (let x = 167; x <= 177; x++) pudPx(x + s, 162, 21);
+  for (let x = 169; x <= 176; x++) pudPx(x - s, 163, 21);
+  for (let x = 171; x <= 174; x++) pudPx(x + s, 163, 22);
+  pudPx(172 - s, 164, 21); pudPx(173 - s, 164, 21);
+  for (let x = 145; x <= 148; x++) pudPx(x - s, 163, 17);
+  pudPx(146 + s, 162, 17);
+  // rain ripples
+  for (let k = 0; k < 4; k++) {
+    const t = (f + k * 6) % 192, a = t % 24;
+    if (a >= 14) continue;
+    const p = RIPPLE[k * 8 + Math.floor(t / 24)];
+    if (a === 0) { pudPx(p.x, p.y - 1, 31); continue; }
+    const rx = 1 + (a >> 1), ry = rx > 3 ? 1 : 0;
+    const seen = new Set();
+    for (let n = 0; n < 32; n++) {
+      const x = Math.round(p.x + rx * Math.cos(TAU * n / 32)), y = Math.round(p.y + ry * Math.sin(TAU * n / 32));
+      const key = x * 1000 + y;
+      if (seen.has(key) || !inMask(PUD, x, y)) continue;
+      seen.add(key);
+      const u = buf[y * W + x];
+      px(x, y, (u === 21 || u === 22) ? 23 : u === 17 ? 18 : (a < 7 ? 31 : 30));
+    }
+  }
+}
+
+
+// ---------------------------------------------------------------------------
+// Secondary focal: lantern + cat
+// ---------------------------------------------------------------------------
+function drawLantern(f) {
+  R = 0;
+  hline(109, 111, 109, 29); hline(108, 112, 110, 29);
+  vline(108, 111, 115, 29); vline(112, 111, 115, 29);
+  rect(109, 111, 3, 5, 19);
+  px(110, 111, 29); // frame bar
+  if (flickAt(f) >= 0) { px(110, 112, 20); px(110, 113, 20); } else px(110, 113, 20);
+  if (flickAt(f) > 0) px(109, 113, 20);
+  hline(108, 112, 116, 29); px(110, 117, 29);
+}
+
+const CAT = [
+  'r..r.....',
+  'rk.rk....',
+  'rkkkk....',
+  'kekek....',
+  'rkkkk....',
+  '.kkk.....',
+  '.rkkkk...',
+  'rkkkkkk..',
+  'rkkkkkkk.',
+  'rkkkkkkk.',
+  '.kkkkkkk.'
+];
+const TAIL = {
+  idle:  [[0, 0], [0, -1], [1, 0], [1, 1], [2, 2], [2, 3], [2, 4], [3, 5]],
+  idle2: [[0, 0], [0, -1], [1, 0], [1, 1], [2, 2], [2, 3], [3, 4], [4, 4]],
+  mid:   [[0, 0], [0, -1], [1, 0], [2, 0], [3, -1], [4, -1], [5, -2], [5, -3]],
+  up1:   [[0, 0], [0, -1], [1, 0], [1, -1], [2, -2], [2, -3], [3, -4], [3, -5]],
+  up2:   [[0, 0], [0, -1], [1, 0], [2, -1], [3, -2], [3, -3], [3, -4], [2, -5]]
+};
+function tailPose(f) {
+  if (f >= 36 && f < 72) return ['mid', 'up1', 'up2', 'up1', 'up2', 'up1', 'mid', 'idle', 'idle'][(f - 36) >> 2];
+  if (f >= 132 && f < 160) return ['mid', 'up1', 'up2', 'up1', 'mid', 'idle', 'idle'][(f - 132) >> 2];
+  if ((f >= 100 && f < 106) || (f >= 176 && f < 182)) return 'idle2';
+  return 'idle';
+}
+function drawCat(f) {
+  R = 0;
+  const x0 = 114, y0 = 114;
+  const blink = (f >= 84 && f < 88) || (f >= 168 && f < 171);
+  sprite(CAT, { k: 29, r: 17, e: blink ? 29 : 19 }, x0, y0);
+  for (const [dx, dy] of TAIL[tailPose(f)]) px(x0 + 8 + dx, y0 + 10 + dy, 29);
+}
+
+
+// ---------------------------------------------------------------------------
+// Primary focal: wizard + cauldron
+// ---------------------------------------------------------------------------
+const WIZARD = [
+  '.............kk.....',
+  '............kak.....',
+  '...........kbak.....',
+  '...........kbak.....',
+  '..........kcbak.....',
+  '..........kcbbak....',
+  '.........kcbbbak....',
+  '.........kcbbbaak...',
+  '........kddddddddk..',
+  '.....kkcbbbbbbbbaakk',
+  '......kkkkkkkkkkkk..',
+  '........ssswwk......',
+  '.......sskswwk......',
+  '.......wwwwwbak.....',
+  '......cwwwwwbbak....',
+  '......kcwwwwbbbak...',
+  '......kcbwwwbbbbak..',
+  '......kcbbwwbbbbak..',
+  '.....kcbbbwbbbbbaak.',
+  '.....kcbbbbbbbbbaak.',
+  '....kcbbbbbbbbbbaak.',
+  '....kcbbbbbbbbbaaak.',
+  '...kcbbbbbbbbbbaaak.',
+  '...kaaaaaaaaaaaaaak.',
+  '...kkkk....kkkk.....'
+];
+const WIZ_MAP = { k: 29, a: 25, b: 26, c: 22, d: 21, s: 27, w: 28 };
+const WX = 211, WY = 130;
+
+function drawCauldron(f) {
+  const cx = CAUL.x;
+  fillEllipse(cx, 157, 12, 1, 29);                       // contact shadow
+  rect(cx - 7, 155, 2, 3, 29); rect(cx + 5, 155, 2, 3, 29); // legs
+  const HW = [11, 11, 11, 11, 11, 10, 10, 9, 7, 5];
+  HW.forEach((hw, i) => {
+    const y = 146 + i;
+    hline(cx - hw, cx + hw, y, 29);
+    if (i >= 3 && i <= 6) { px(cx - hw + 2, y, 15); if (i === 4 || i === 5) px(cx - hw + 3, y, 15); }
+    if (i >= 7) { px(cx - hw + 1, y, 21); px(cx + hw - 1, y, 21); } // bounce from glowing ground
+  });
+  // rim, inner back wall, glowing liquid
+  fillEllipse(cx, 145, 11, 3, 15);
+  hline(cx - 6, cx + 6, 142, 16);
+  ellipseRows(cx, 145, 9, 2, (y, a, b) => { if (y <= 146) hline(a, b, y, 21); });
+  hline(cx - 2, cx + 2, 143, 22);
+  fillEllipse(cx, 145, 8, 1, 22);
+  hline(cx - 7, cx + 7, 147, 16); hline(cx - 6, cx + 6, 148, 15);
+  // swirl highlights follow the stirring
+  const th = TAU * f / 48;
+  for (let j = 0; j < 3; j++) {
+    const a = th + j * TAU / 3;
+    const hx = cx + Math.round(5.5 * Math.cos(a)), hy = 145 + Math.round(0.9 * Math.sin(a));
+    for (let x = hx - 1; x <= hx + 1; x++) if (inMask(LIQ, x, hy)) px(x, hy, 23);
+  }
+  hline(cx - 1, cx + 1, 145, 24);
+  if (pulseAt(f) === 2) { px(cx - 2, 145, 23); px(cx + 2, 145, 23); px(cx, 144, 24); }
+  // bubbles
+  [[-4, 145, 0], [3, 145, 11], [1, 144, 22]].forEach(([ox, by, ph]) => {
+    const a = (f + ph) % 32, bx = cx + ox;
+    if (a < 4) { px(bx, by - 1, 24); px(bx - 1, by, 23); px(bx + 1, by, 23); }
+    else if (a < 6) { px(bx - 1, by - 2, 23); px(bx + 1, by - 2, 23); px(bx, by - 3, 23); }
+  });
+}
+
+
+function drawWizardScene(f) {
+  R = 0;
+  fillEllipse(224, 154, 8, 1, 8);   // wizard shadow, cast away from the cauldron
+  sprite(WIZARD, WIZ_MAP, WX, WY);
+  drawCauldron(f);
+  // stirring: stick tip circles in the liquid, hand rides the stick
+  const th = TAU * f / 48;
+  const B = { x: CAUL.x + Math.round(5 * Math.cos(th)), y: 145 + Math.round(0.8 * Math.sin(th)) };
+  const T = { x: 213 + Math.round(2 * Math.cos(th)), y: 135 + Math.round(0.6 * Math.sin(th)) };
+  const Hd = { x: Math.round(B.x + (T.x - B.x) * 0.55), y: Math.round(B.y + (T.y - B.y) * 0.55) };
+  line(B.x, B.y, T.x, T.y, 12);
+  px(B.x, B.y, 23);
+  lineCb(222, 146, Hd.x + 1, Hd.y, (x, y) => { px(x, y, 26); px(x, y + 1, 25); });
+  px(Hd.x + 1, Hd.y - 1, 22);                            // cyan rim on the cuff
+  rect(Hd.x - 1, Hd.y, 2, 2, 27);
+}
+
+function drawSteam(f) {
+  R = 0;
+  const puffs = [];
+  for (let i = 0; i < 8; i++) puffs.push({ i, a: (f + i * 8) % 64 });
+  puffs.sort((p, q) => q.a - p.a);
+  const OX = [-3, 0, 3, -1, 2, -2, 1, 0];
+  for (const { i, a } of puffs) {
+    if (a >= 56) continue;
+    const y = 139 - Math.floor(a * 0.55);
+    const x = CAUL.x + OX[i] - Math.floor(a * 0.12) + Math.round(1.5 * Math.sin(TAU * a / 32 + i));
+    const r = a < 10 ? 1 : a < 36 ? 2 : 1;
+    disc(x, y, r, a < 12 ? 23 : a < 30 ? 22 : 21);
+  }
+  // rising magic motes
+  [[-5, 0], [4, 17], [0, 33]].forEach(([ox, ph]) => {
+    const a = (f + ph) % 48;
+    if (a < 30 && a % 8 < 6)
+      px(CAUL.x + ox + Math.round(2 * Math.sin(TAU * a / 24 + ph)), 141 - a, a < 14 ? 23 : 22);
+  });
+}
+
+function drawFireflies(f) {
+  for (const q of FIREFLIES) {
+    const b = (f + q.off) % 64;
+    if (b >= 36) continue;
+    const x = q.cx + Math.round(q.ax * Math.sin(TAU * q.k1 * f / F + q.p));
+    const y = q.cy + Math.round(q.ay * Math.sin(TAU * q.k2 * f / F + q.p * 1.7));
+    if (b >= 6 && b < 30) { px(x - 1, y, 17); px(x + 1, y, 17); px(x, y - 1, 17); px(x, y + 1, 17); }
+    px(x, y, 19);
+  }
+}
+
+function render(f) {
+  buf.set(BG.c); rv.fill(0);
+  R = 0; drawFarRain(f);
+  composite(MG);
+  R = 0; drawSmoke(f);
+  R = 1; drawSplashes(f);
+  drawPuddle(f);
+  drawLantern(f);
+  drawCat(f);
+  drawWizardScene(f);
+  drawSteam(f);
+  R = 1; drawNearRain(f);
+  composite(FG);
+  lightPass(f);
+  drawFireflies(f);
+}
+
+
+// ---------------------------------------------------------------------------
+// Output: indexed buffer -> 320x180 canvas -> integer-scaled view canvas
+// ---------------------------------------------------------------------------
+const low = document.createElement('canvas');
+low.width = W; low.height = H;
+const lctx = low.getContext('2d');
+const img = lctx.createImageData(W, H), data = img.data;
+const view = document.getElementById('view');
+const vctx = view.getContext('2d');
+let scale = 1;
+
+function resize() {
+  const dpr = window.devicePixelRatio || 1;
+  scale = Math.max(1, Math.floor(Math.min(innerWidth * dpr / W, innerHeight * dpr / H)));
+  view.width = W * scale; view.height = H * scale;
+  view.style.width = (W * scale / dpr) + 'px';
+  view.style.height = (H * scale / dpr) + 'px';
+  vctx.imageSmoothingEnabled = false;
+  lastFrame = -1;
+}
+
+function blit() {
+  for (let i = 0, j = 0; i < N; i++, j += 4) {
+    const c = buf[i] * 3;
+    data[j] = PR[c]; data[j + 1] = PR[c + 1]; data[j + 2] = PR[c + 2]; data[j + 3] = 255;
+  }
+  lctx.putImageData(img, 0, 0);
+  vctx.imageSmoothingEnabled = false;
+  vctx.drawImage(low, 0, 0, W * scale, H * scale);
+}
+
+let lastFrame = -1;
+function tick(now) {
+  const f = Math.floor((now % LOOP_MS) / (LOOP_MS / F)) % F;
+  if (f !== lastFrame) { render(f); blit(); lastFrame = f; }
+  requestAnimationFrame(tick);
+}
+window.addEventListener('resize', resize);
+resize();
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>

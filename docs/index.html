@@ -19,7 +19,9 @@
     a:hover { text-decoration: underline; }
     .viewport { position: relative; width: 100%; aspect-ratio: 16 / 9; overflow: hidden; background: #080c10; border-radius: 5px; }
     iframe { position: absolute; top: 0; left: 0; display: block; width: 1280px; height: 720px; border: 0; transform-origin: top left; }
-    @media (max-width: 760px) {
+    .prompt { margin-top: 10px; padding-top: 8px; border-top: 1px solid #34454e; }
+    .prompt summary { color: #8de6ef; cursor: pointer; font-size: 13px; }
+    .prompt pre { max-height: 320px; overflow: auto; margin: 8px 0 0; padding: 10px; border-radius: 6px; background: #10171d; color: #d9e6e8; font: 12px/1.55 ui-monospace, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }    @media (max-width: 760px) {
       main { grid-template-columns: minmax(0, 1fr); }
       header { padding-inline: 14px; }
     }
@@ -37,6 +39,42 @@
         <a href="./A/" target="_blank" rel="noopener noreferrer">Open standalone ↗</a>
       </div>
       <div class="viewport"><iframe src="./A/" title="A · Baseline" sandbox="allow-scripts" loading="eager" referrerpolicy="no-referrer"></iframe></div>
+      <details class="prompt"><summary>View prompt</summary><pre>비 오는 밤의 숲속 마법사 오두막을 배경으로 animated pixel-art diorama를 만들어라.
+
+장면에는 다음 요소를 포함한다.
+
+- 작은 wizard
+- 빛나는 cyan cauldron
+- black cat
+- wooden cabin
+- warm amber lantern
+- rain
+- chimney smoke
+- cauldron steam
+- firefly
+- puddle
+
+wizard는 cauldron을 젓고, cat은 가끔 tail을 움직인다.
+rain, smoke, steam, firefly, puddle에도 animation을 넣는다.
+
+조건:
+
+- Vanilla JavaScript + Canvas 2D
+- 단일 HTML
+- logical resolution 320&#215;180
+- 정확히 8초 seamless loop
+- nearest-neighbor scaling
+- imageSmoothingEnabled = false
+- 외부 image, SVG, sprite sheet, library 사용 금지
+- 모든 pixel art를 code로 직접 제작
+
+완성된 pixel-art game diorama처럼 만들어라.
+
+&quot;index.html&quot;로 저장해라.
+
+첫 complete implementation을 결과로 제출한다.
+
+이 experiment에서는 browser screenshot이나 rendered output을 다시 보고 visual quality를 수정하는 self-review를 수행하지 않는다.</pre></details>
     </article>
     <article class="card" aria-labelledby="title-B">
       <div class="card-heading">
@@ -44,6 +82,53 @@
         <a href="./B/" target="_blank" rel="noopener noreferrer">Open standalone ↗</a>
       </div>
       <div class="viewport"><iframe src="./B/" title="B · Pixel Craft" sandbox="allow-scripts" loading="eager" referrerpolicy="no-referrer"></iframe></div>
+      <details class="prompt"><summary>View prompt</summary><pre>비 오는 밤의 숲속 마법사 오두막을 배경으로 animated pixel-art diorama를 만들어라.
+
+장면에는 다음 요소를 포함한다.
+
+- 작은 wizard
+- 빛나는 cyan cauldron
+- black cat
+- wooden cabin
+- warm amber lantern
+- rain
+- chimney smoke
+- cauldron steam
+- firefly
+- puddle
+
+wizard는 cauldron을 젓고, cat은 가끔 tail을 움직인다.
+rain, smoke, steam, firefly, puddle에도 animation을 넣는다.
+
+조건:
+
+- Vanilla JavaScript + Canvas 2D
+- 단일 HTML
+- logical resolution 320&#215;180
+- 정확히 8초 seamless loop
+- nearest-neighbor scaling
+- imageSmoothingEnabled = false
+- 외부 image, SVG, sprite sheet, library 사용 금지
+- 모든 pixel art를 code로 직접 제작
+
+추가 pixel-art quality 규칙:
+
+- 모든 final coordinate를 integer pixel grid에 맞춘다.
+- sub-pixel rendering과 anti-aliasing을 사용하지 않는다.
+- 약 24~32개의 제한된 core palette를 사용한다.
+- isolated pixel보다 coherent pixel cluster를 우선한다.
+- 형태는 silhouette → large shape → medium cluster → selective detail 순서로 구성한다.
+- 모든 영역에 동일한 detail density를 적용하지 않는다.
+- orphan pixel과 noisy dithering을 최소화한다.
+- smooth gradient와 blur에 의존하지 않는다.
+
+완성된 handcrafted pixel-art game diorama처럼 만들어라.
+
+&quot;index.html&quot;로 저장해라.
+
+첫 complete implementation을 결과로 제출한다.
+
+이 experiment에서는 browser screenshot이나 rendered output을 다시 보고 visual quality를 수정하는 self-review를 수행하지 않는다.</pre></details>
     </article>
     <article class="card" aria-labelledby="title-C">
       <div class="card-heading">
@@ -51,6 +136,60 @@
         <a href="./C/" target="_blank" rel="noopener noreferrer">Open standalone ↗</a>
       </div>
       <div class="viewport"><iframe src="./C/" title="C · Art Direction" sandbox="allow-scripts" loading="eager" referrerpolicy="no-referrer"></iframe></div>
+      <details class="prompt"><summary>View prompt</summary><pre>비 오는 밤의 숲속 마법사 오두막을 배경으로 animated pixel-art diorama를 만들어라.
+
+장면에는 다음 요소를 포함한다.
+
+- 작은 wizard
+- 빛나는 cyan cauldron
+- black cat
+- wooden cabin
+- warm amber lantern
+- rain
+- chimney smoke
+- cauldron steam
+- firefly
+- puddle
+
+wizard는 cauldron을 젓고, cat은 가끔 tail을 움직인다.
+rain, smoke, steam, firefly, puddle에도 animation을 넣는다.
+
+조건:
+
+- Vanilla JavaScript + Canvas 2D
+- 단일 HTML
+- logical resolution 320&#215;180
+- 정확히 8초 seamless loop
+- nearest-neighbor scaling
+- imageSmoothingEnabled = false
+- 외부 image, SVG, sprite sheet, library 사용 금지
+- 모든 pixel art를 code로 직접 제작
+Pixel-art quality:
+
+- integer pixel grid
+- no sub-pixel rendering
+- no anti-aliasing
+- 24~32색 core palette
+- coherent pixel cluster
+- silhouette → large shape → medium cluster → selective detail
+- orphan pixel과 excessive dithering 최소화
+- no blur / smooth gradient
+
+Art direction:
+
+- primary focal point는 wizard + cauldron이다.
+- secondary focal point는 cat + lantern이다.
+- background는 focal plane보다 contrast와 detail density를 낮춘다.
+- foreground / midground / background가 명확하게 구분되어야 한다.
+- cyan magical light와 warm amber light를 서로 다른 light source로 일관되게 처리한다.
+- brightest highlight는 focal area에 제한한다.
+- foreground foliage를 framing에 활용한다.
+- 장식의 양보다 composition, silhouette, color hierarchy를 우선한다.
+&quot;index.html&quot;로 저장해라.
+
+첫 complete implementation을 결과로 제출한다.
+
+이 experiment에서는 browser screenshot이나 rendered output을 다시 보고 visual quality를 수정하는 self-review를 수행하지 않는다.</pre></details>
     </article>
     <article class="card" aria-labelledby="title-D">
       <div class="card-heading">
@@ -58,6 +197,80 @@
         <a href="./D/" target="_blank" rel="noopener noreferrer">Open standalone ↗</a>
       </div>
       <div class="viewport"><iframe src="./D/" title="D · Self Review" sandbox="allow-scripts" loading="eager" referrerpolicy="no-referrer"></iframe></div>
+      <details class="prompt"><summary>View prompt</summary><pre>비 오는 밤의 숲속 마법사 오두막을 배경으로 animated pixel-art diorama를 만들어라.
+
+장면에는 다음 요소를 포함한다.
+
+- 작은 wizard
+- 빛나는 cyan cauldron
+- black cat
+- wooden cabin
+- warm amber lantern
+- rain
+- chimney smoke
+- cauldron steam
+- firefly
+- puddle
+
+wizard는 cauldron을 젓고, cat은 가끔 tail을 움직인다.
+rain, smoke, steam, firefly, puddle에도 animation을 넣는다.
+
+조건:
+
+- Vanilla JavaScript + Canvas 2D
+- 단일 HTML
+- logical resolution 320&#215;180
+- 정확히 8초 seamless loop
+- nearest-neighbor scaling
+- imageSmoothingEnabled = false
+- 외부 image, SVG, sprite sheet, library 사용 금지
+- 모든 pixel art를 code로 직접 제작
+Pixel-art quality:
+
+- integer pixel grid
+- no sub-pixel rendering
+- no anti-aliasing
+- 24~32색 core palette
+- coherent pixel cluster
+- silhouette → large shape → medium cluster → selective detail
+- orphan pixel과 excessive dithering 최소화
+- no blur / smooth gradient
+
+Art direction:
+
+- primary focal point는 wizard + cauldron이다.
+- secondary focal point는 cat + lantern이다.
+- background는 focal plane보다 contrast와 detail density를 낮춘다.
+- foreground / midground / background가 명확하게 구분되어야 한다.
+- cyan magical light와 warm amber light를 서로 다른 light source로 일관되게 처리한다.
+- brightest highlight는 focal area에 제한한다.
+- foreground foliage를 framing에 활용한다.
+- 장식의 양보다 composition, silhouette, color hierarchy를 우선한다.
+&quot;index.html&quot;로 저장해라.
+
+첫 complete implementation을 결과로 제출한다.
+
+첫 implementation 이후 실제 browser에서 render된 결과를 확인한다.
+
+다음을 검사한다.
+
+- silhouette readability
+- pixel cluster quality
+- palette consistency
+- lighting consistency
+- pixel density
+- accidental smoothing
+- visual noise
+- animation jitter
+- visible loop seam
+
+명백한 visual defect가 발견되면 수정한다.
+
+최소 한 번:
+
+IMPLEMENT → RENDER → INSPECT → FIX → RENDER AGAIN
+
+과정을 실제로 수행한다.</pre></details>
     </article>
   </main>
   <script>
@@ -73,3 +286,4 @@
   </script>
 </body>
 </html>
+
